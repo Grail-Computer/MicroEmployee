@@ -202,7 +202,8 @@ impl CodexManager {
                 if settings.allow_context_writes {
                     json!({
                         "type": "workspaceWrite",
-                        "writableRoots": [],
+                        // Only allow writes under the context directory.
+                        "writableRoots": [cwd.to_string_lossy()],
                         "networkAccess": settings.shell_network_access,
                         "excludeTmpdirEnvVar": false,
                         "excludeSlashTmp": false
@@ -234,7 +235,10 @@ impl CodexManager {
             .context("turn/start missing turn.id")?
             .to_string();
 
-        let mut agent_message = String::new();
+        let mut agent_message_item_id: Option<String> = None;
+        let mut agent_message_deltas = String::new();
+        let mut agent_message_final: Option<String> = None;
+        let mut last_turn_error: Option<String> = None;
         let mut file_change_paths_by_item: HashMap<String, Vec<PathBuf>> = HashMap::new();
 
         loop {
@@ -281,9 +285,32 @@ impl CodexManager {
             let params = msg.get("params").cloned().unwrap_or(json!({}));
 
             match method {
+                "error" => {
+                    let p_thread_id = params.get("threadId").and_then(|v| v.as_str()).unwrap_or("");
+                    let p_turn_id = params.get("turnId").and_then(|v| v.as_str()).unwrap_or("");
+                    if p_thread_id == thread_id && p_turn_id == turn_id {
+                        let msg = params
+                            .get("error")
+                            .and_then(|e| e.get("message"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown error");
+                        last_turn_error = Some(msg.to_string());
+                    }
+                }
                 "item/started" => {
+                    let p_thread_id = params.get("threadId").and_then(|v| v.as_str()).unwrap_or("");
+                    let p_turn_id = params.get("turnId").and_then(|v| v.as_str()).unwrap_or("");
+                    if p_thread_id != thread_id || p_turn_id != turn_id {
+                        continue;
+                    }
+
                     let item = params.get("item").cloned().unwrap_or(json!({}));
                     let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    if item_type == "agentMessage" {
+                        if let Some(item_id) = item.get("id").and_then(|v| v.as_str()) {
+                            agent_message_item_id = Some(item_id.to_string());
+                        }
+                    }
                     if item_type == "fileChange" {
                         let item_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
                         let mut paths: Vec<PathBuf> = Vec::new();
@@ -300,25 +327,76 @@ impl CodexManager {
                     }
                 }
                 "item/agentMessage/delta" => {
+                    let p_thread_id = params.get("threadId").and_then(|v| v.as_str()).unwrap_or("");
                     let p_turn_id = params.get("turnId").and_then(|v| v.as_str()).unwrap_or("");
-                    if p_turn_id == turn_id {
+                    if p_thread_id == thread_id && p_turn_id == turn_id {
+                        let item_id = params.get("itemId").and_then(|v| v.as_str()).unwrap_or("");
+                        if agent_message_item_id.is_none() && !item_id.is_empty() {
+                            agent_message_item_id = Some(item_id.to_string());
+                        }
+                        if let Some(want) = agent_message_item_id.as_deref() {
+                            if !item_id.is_empty() && item_id != want {
+                                continue;
+                            }
+                        }
                         let delta = params.get("delta").and_then(|v| v.as_str()).unwrap_or("");
-                        agent_message.push_str(delta);
+                        agent_message_deltas.push_str(delta);
+                    }
+                }
+                "item/completed" => {
+                    let p_thread_id = params.get("threadId").and_then(|v| v.as_str()).unwrap_or("");
+                    let p_turn_id = params.get("turnId").and_then(|v| v.as_str()).unwrap_or("");
+                    if p_thread_id != thread_id || p_turn_id != turn_id {
+                        continue;
+                    }
+
+                    let item = params.get("item").cloned().unwrap_or(json!({}));
+                    let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    if item_type == "agentMessage" {
+                        if let Some(item_id) = item.get("id").and_then(|v| v.as_str()) {
+                            agent_message_item_id = Some(item_id.to_string());
+                        }
+                        if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                            agent_message_final = Some(text.to_string());
+                        }
                     }
                 }
                 "turn/completed" => {
-                    let p_turn_id = params
-                        .get("turn")
-                        .and_then(|t| t.get("id"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
                     let p_thread_id = params.get("threadId").and_then(|v| v.as_str()).unwrap_or("");
-                    if p_thread_id == thread_id && p_turn_id == turn_id {
-                        break;
+                    let p_turn = params.get("turn").cloned().unwrap_or(json!({}));
+                    let p_turn_id = p_turn.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    if p_thread_id != thread_id || p_turn_id != turn_id {
+                        continue;
+                    }
+
+                    let status = p_turn.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                    match status {
+                        "completed" => break,
+                        "failed" => {
+                            let msg = p_turn
+                                .get("error")
+                                .and_then(|e| e.get("message"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                                .or_else(|| last_turn_error.clone())
+                                .unwrap_or_else(|| "turn failed".to_string());
+                            anyhow::bail!("codex turn failed: {msg}");
+                        }
+                        "interrupted" => {
+                            anyhow::bail!("codex turn interrupted");
+                        }
+                        other => {
+                            anyhow::bail!("unexpected codex turn status: {other}");
+                        }
                     }
                 }
                 _ => {}
             }
+        }
+
+        let agent_message = agent_message_final.unwrap_or(agent_message_deltas);
+        if agent_message.trim().is_empty() {
+            warn!("codex returned empty agent message");
         }
 
         Ok(CodexTurnOutput {

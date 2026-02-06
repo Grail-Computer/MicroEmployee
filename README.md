@@ -64,7 +64,7 @@ Mount a volume at `/data`.
 Grail stores:
 - `/data/grail.sqlite` (queue, settings, session mapping)
 - `/data/context/` (durable notes)
-- `/data/AGENTS.md` (default instruction “constitution” for the agent)
+- `/data/context/AGENTS.md` (default instruction “constitution” for the agent)
 - `/data/codex/` (`CODEX_HOME` for Codex app-server rollouts/state)
 
 ## Permissions Model

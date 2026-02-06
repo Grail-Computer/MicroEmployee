@@ -8,9 +8,11 @@ mod slack;
 mod templates;
 mod worker;
 
-use std::sync::Arc;
+	use std::sync::Arc;
+	use std::time::Duration;
 
-use askama::Template;
+	use anyhow::Context;
+	use askama::Template;
 use axum::body::Bytes;
 use axum::extract::{Form, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
@@ -82,7 +84,11 @@ async fn main() -> anyhow::Result<()> {
     let db_path = config.data_dir.join("grail.sqlite");
     let pool = db::init_sqlite(&db_path).await?;
 
-    let http = reqwest::Client::new();
+	    let http = reqwest::Client::builder()
+	        .connect_timeout(Duration::from_secs(10))
+	        .timeout(Duration::from_secs(30))
+	        .build()
+	        .context("build reqwest client")?;
     let slack = config
         .slack_bot_token
         .clone()

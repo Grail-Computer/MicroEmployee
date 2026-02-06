@@ -102,13 +102,20 @@ async fn process_task(
         });
 
     let cwd = state.config.data_dir.join("context");
+    let cwd = tokio::fs::canonicalize(&cwd).await.unwrap_or(cwd);
     let thread_id = codex
         .resume_or_start_thread(session.codex_thread_id.as_deref(), &settings, &cwd)
         .await?;
     session.codex_thread_id = Some(thread_id.clone());
 
     let slack_context = format_slack_context(&ctx);
-    let input = build_turn_input(task, &session.memory_summary, &slack_context, allow_slack_mcp);
+    let input = build_turn_input(
+        task,
+        &settings,
+        &session.memory_summary,
+        &slack_context,
+        allow_slack_mcp,
+    );
 
     let output_schema = serde_json::json!({
         "type": "object",
@@ -136,23 +143,43 @@ async fn process_task(
         .run_turn(&thread_id, &settings, &cwd, &input, output_schema)
         .await?;
 
-    let parsed = parse_agent_json(&out.agent_message_text)?;
+    let parsed = match parse_agent_json(&out.agent_message_text) {
+        Ok(v) => Some(v),
+        Err(err) => {
+            warn!(error = %err, "agent output did not match schema; falling back to raw output");
+            None
+        }
+    };
 
-    // Apply durable updates.
-    if settings.permissions_mode.as_db_str() == "full" && settings.allow_context_writes {
-        apply_context_writes(&cwd, &parsed.context_writes).await?;
-    }
+    let slack_reply = if let Some(parsed) = parsed {
+        // Apply durable updates.
+        if settings.permissions_mode.as_db_str() == "full" && settings.allow_context_writes {
+            apply_context_writes(&cwd, &parsed.context_writes).await?;
+        }
 
-    session.memory_summary = clamp_len(parsed.updated_memory_summary, 6_000);
+        session.memory_summary = clamp_len(parsed.updated_memory_summary, 6_000);
+        parsed.slack_reply
+    } else {
+        let raw = out.agent_message_text.trim();
+        if raw.is_empty() {
+            "I finished, but returned an empty response.".to_string()
+        } else {
+            let raw = clamp_len(raw.to_string(), 6_000);
+            format!(
+                "I generated a response, but it did not match the expected JSON format, so I couldn't safely update memory/context.\n\nRaw output:\n{raw}"
+            )
+        }
+    };
+
     session.last_used_at = chrono::Utc::now().timestamp();
     db::upsert_session(&state.pool, &session).await?;
 
     // Reply in Slack.
-    slack.post_message(&task.channel_id, &task.thread_ts, &parsed.slack_reply)
+    slack.post_message(&task.channel_id, &task.thread_ts, &slack_reply)
         .await?;
 
     info!(task_id = task.id, "replied to slack");
-    Ok(parsed.slack_reply)
+    Ok(slack_reply)
 }
 
 async fn load_openai_api_key(state: &AppState) -> anyhow::Result<String> {
@@ -196,6 +223,7 @@ fn format_slack_context(messages: &[crate::slack::SlackMessage]) -> String {
 
 fn build_turn_input(
     task: &crate::models::Task,
+    settings: &crate::models::Settings,
     memory_summary: &str,
     slack_context: &str,
     allow_slack_mcp: bool,
@@ -221,6 +249,16 @@ fn build_turn_input(
     s.push_str(slack_context);
     s.push_str("\n");
 
+    s.push_str("Permissions:\n");
+    s.push_str(&format!(
+        "- permissions_mode: {}\n",
+        settings.permissions_mode.as_db_str()
+    ));
+    s.push_str(&format!(
+        "- allow_context_writes: {}\n\n",
+        settings.allow_context_writes
+    ));
+
     if allow_slack_mcp {
         s.push_str("Slack tools are enabled. If you need more context, use the Slack MCP tools.\n\n");
     } else {
@@ -230,6 +268,11 @@ fn build_turn_input(
     s.push_str("User request:\n");
     s.push_str(task.prompt_text.trim());
     s.push_str("\n\n");
+
+    s.push_str("Durable knowledge:\n");
+    s.push_str("- If you want to write durable notes/docs, return them via `context_writes` with a RELATIVE path under the context directory.\n");
+    s.push_str("- When you create a new doc, also update `INDEX.md` with a single-line entry: `<label> - <relative/path.md>`.\n");
+    s.push_str("- If context writes are not allowed, set `context_writes` to an empty array.\n\n");
 
     s.push_str("Return ONLY a single JSON object matching the provided JSON schema.\n");
     s
@@ -249,8 +292,28 @@ struct ContextWrite {
 }
 
 fn parse_agent_json(text: &str) -> anyhow::Result<AgentJson> {
-    let t = strip_code_fences(text).trim().to_string();
-    serde_json::from_str::<AgentJson>(&t).context("parse agent json")
+    let t = strip_code_fences(text).trim();
+    if t.is_empty() {
+        anyhow::bail!("empty agent output");
+    }
+
+    // Strict attempt first.
+    if let Ok(v) = serde_json::from_str::<AgentJson>(t) {
+        return Ok(v);
+    }
+
+    // Best-effort: pull out the largest {...} span in case the model wrapped the JSON.
+    let Some(start) = t.find('{') else {
+        anyhow::bail!("agent output contained no JSON object");
+    };
+    let Some(end) = t.rfind('}') else {
+        anyhow::bail!("agent output contained no JSON object end");
+    };
+    if end <= start {
+        anyhow::bail!("invalid JSON object span");
+    }
+    let slice = &t[start..=end];
+    serde_json::from_str::<AgentJson>(slice).context("parse agent json")
 }
 
 fn strip_code_fences(s: &str) -> &str {
@@ -265,7 +328,12 @@ fn strip_code_fences(s: &str) -> &str {
 }
 
 async fn apply_context_writes(context_dir: &std::path::Path, writes: &[ContextWrite]) -> anyhow::Result<()> {
-    for w in writes {
+    const MAX_WRITES: usize = 20;
+    const MAX_TOTAL_CHARS: usize = 300_000;
+    const MAX_FILE_CHARS: usize = 200_000;
+
+    let mut remaining = MAX_TOTAL_CHARS;
+    for w in writes.iter().take(MAX_WRITES) {
         let rel = sanitize_rel_path(&w.path)?;
         let full = context_dir.join(rel);
         if let Some(parent) = full.parent() {
@@ -273,9 +341,22 @@ async fn apply_context_writes(context_dir: &std::path::Path, writes: &[ContextWr
                 .await
                 .with_context(|| format!("create {}", parent.display()))?;
         }
-        tokio::fs::write(&full, w.content.as_bytes())
+
+        let mut content = w.content.clone();
+        if content.len() > MAX_FILE_CHARS {
+            content = content.chars().take(MAX_FILE_CHARS).collect();
+        }
+        if content.len() > remaining {
+            content = content.chars().take(remaining).collect();
+        }
+        remaining = remaining.saturating_sub(content.len());
+
+        tokio::fs::write(&full, content.as_bytes())
             .await
             .with_context(|| format!("write {}", full.display()))?;
+        if remaining == 0 {
+            break;
+        }
     }
     Ok(())
 }
