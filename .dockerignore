@@ -1,0 +1,13 @@
+.git
+**/target
+data
+**/*.sqlite
+**/*.sqlite-wal
+**/*.sqlite-shm
+.env
+.env.*
+!.env.example
+
+# Local Codex clone is for reference only and should never be shipped/built.
+codex
+
