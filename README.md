@@ -25,7 +25,7 @@ This repo is Rust-first (server + Slack MCP server), and uses the open-source Co
    - `SLACK_SIGNING_SECRET` (required)
    - `SLACK_BOT_TOKEN` (required)
    - `OPENAI_API_KEY` (recommended)
-   - `GRAIL_MASTER_KEY` (optional; required only if you want to set the OpenAI key via the dashboard and store it encrypted)
+   - `GRAIL_MASTER_KEY` (optional; required only if you want to set the OpenAI key via the dashboard and store it encrypted). Generate with: `openssl rand -hex 32`
 4. Deploy.
 
 After deploy:
