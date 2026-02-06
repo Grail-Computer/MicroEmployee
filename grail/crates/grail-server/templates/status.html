@@ -24,6 +24,26 @@
       </div>
     </div>
     <div class="kv">
+      <div class="k">OPENAI_API_KEY</div>
+      <div class="v">
+        {% if openai_api_key_set %}
+          <span class="pill ok">set</span>
+        {% else %}
+          <span class="pill bad">missing</span>
+        {% endif %}
+      </div>
+    </div>
+    <div class="kv">
+      <div class="k">GRAIL_MASTER_KEY</div>
+      <div class="v">
+        {% if master_key_set %}
+          <span class="pill ok">set</span>
+        {% else %}
+          <span class="pill bad">missing</span>
+        {% endif %}
+      </div>
+    </div>
+    <div class="kv">
       <div class="k">Queue Depth</div>
       <div class="v"><span class="pill">{{ queue_depth }}</span></div>
     </div>
@@ -37,4 +57,3 @@
     Slack events: <span class="pill">POST /slack/events</span>
   </p>
 {% endblock %}
-

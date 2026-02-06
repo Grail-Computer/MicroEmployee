@@ -32,6 +32,7 @@ pub struct Settings {
     pub permissions_mode: PermissionsMode,
     pub allow_slack_mcp: bool,
     pub allow_context_writes: bool,
+    pub shell_network_access: bool,
     pub updated_at: i64,
 }
 
@@ -52,3 +53,10 @@ pub struct Task {
     pub finished_at: Option<i64>,
 }
 
+#[derive(Debug, Clone)]
+pub struct Session {
+    pub conversation_key: String,
+    pub codex_thread_id: Option<String>,
+    pub memory_summary: String,
+    pub last_used_at: i64,
+}

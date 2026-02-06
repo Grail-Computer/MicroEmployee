@@ -4,6 +4,7 @@
 # Local env/secrets
 .env
 .env.*
+!.env.example
 
 # Local runtime state (Railway volume path is /data in prod, but local defaults may create ./data)
 data/

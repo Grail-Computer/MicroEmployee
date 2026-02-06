@@ -8,6 +8,8 @@ pub struct StatusTemplate {
     pub active: &'static str,
     pub slack_signing_secret_set: bool,
     pub slack_bot_token_set: bool,
+    pub openai_api_key_set: bool,
+    pub master_key_set: bool,
     pub queue_depth: i64,
     pub permissions_mode: String,
 }
@@ -17,7 +19,15 @@ pub struct StatusTemplate {
 pub struct SettingsTemplate {
     pub active: &'static str,
     pub context_last_n: i64,
+    pub model: String,
+    pub reasoning_effort: String,
+    pub reasoning_summary: String,
     pub permissions_mode: String,
+    pub allow_slack_mcp: bool,
+    pub allow_context_writes: bool,
+    pub shell_network_access: bool,
+    pub master_key_set: bool,
+    pub openai_api_key_set: bool,
 }
 
 #[derive(Template)]
@@ -34,19 +44,30 @@ pub struct TaskRow {
     pub channel_id: String,
     pub thread_ts: String,
     pub prompt_text: String,
+    pub result_text: String,
+    pub error_text: String,
     pub created_at: String,
 }
 
 impl From<Task> for TaskRow {
     fn from(t: Task) -> Self {
+        fn compact(mut s: String) -> String {
+            s = s.replace('\n', " ").replace('\r', " ");
+            if s.len() > 220 {
+                s = format!("{}…", s.chars().take(219).collect::<String>());
+            }
+            s
+        }
+
         Self {
             id: t.id,
             status: t.status,
             channel_id: t.channel_id,
             thread_ts: t.thread_ts,
             prompt_text: t.prompt_text,
+            result_text: compact(t.result_text.unwrap_or_default()),
+            error_text: compact(t.error_text.unwrap_or_default()),
             created_at: format!("{}", t.created_at),
         }
     }
 }
-

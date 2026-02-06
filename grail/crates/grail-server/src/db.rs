@@ -4,7 +4,7 @@ use anyhow::Context;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 
-use crate::models::{PermissionsMode, Settings, Task};
+use crate::models::{PermissionsMode, Session, Settings, Task};
 
 pub async fn init_sqlite(db_path: &Path) -> anyhow::Result<SqlitePool> {
     let options = SqliteConnectOptions::new()
@@ -37,6 +37,7 @@ pub async fn get_settings(pool: &SqlitePool) -> anyhow::Result<Settings> {
           permissions_mode,
           allow_slack_mcp,
           allow_context_writes,
+          shell_network_access,
           updated_at
         FROM settings
         WHERE id = 1
@@ -54,30 +55,85 @@ pub async fn get_settings(pool: &SqlitePool) -> anyhow::Result<Settings> {
         permissions_mode: PermissionsMode::from_db_str(row.get::<String, _>("permissions_mode").as_str()),
         allow_slack_mcp: row.get::<i64, _>("allow_slack_mcp") != 0,
         allow_context_writes: row.get::<i64, _>("allow_context_writes") != 0,
+        shell_network_access: row.get::<i64, _>("shell_network_access") != 0,
         updated_at: row.get::<i64, _>("updated_at"),
     })
 }
 
 pub async fn update_settings(
     pool: &SqlitePool,
-    context_last_n: i64,
-    permissions_mode: PermissionsMode,
+    settings: &Settings,
 ) -> anyhow::Result<()> {
     sqlx::query(
         r#"
         UPDATE settings
         SET context_last_n = ?1,
-            permissions_mode = ?2,
+            model = ?2,
+            reasoning_effort = ?3,
+            reasoning_summary = ?4,
+            permissions_mode = ?5,
+            allow_slack_mcp = ?6,
+            allow_context_writes = ?7,
+            shell_network_access = ?8,
             updated_at = unixepoch()
         WHERE id = 1
         "#,
     )
-    .bind(context_last_n)
-    .bind(permissions_mode.as_db_str())
+    .bind(settings.context_last_n)
+    .bind(settings.model.as_deref())
+    .bind(settings.reasoning_effort.as_deref())
+    .bind(settings.reasoning_summary.as_deref())
+    .bind(settings.permissions_mode.as_db_str())
+    .bind(if settings.allow_slack_mcp { 1 } else { 0 })
+    .bind(if settings.allow_context_writes { 1 } else { 0 })
+    .bind(if settings.shell_network_access { 1 } else { 0 })
     .execute(pool)
     .await
     .context("update settings")?;
     Ok(())
+}
+
+pub async fn upsert_secret(
+    pool: &SqlitePool,
+    key: &str,
+    nonce: &[u8],
+    ciphertext: &[u8],
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO secrets (key, nonce, ciphertext, updated_at)
+        VALUES (?1, ?2, ?3, unixepoch())
+        ON CONFLICT(key) DO UPDATE SET
+          nonce = excluded.nonce,
+          ciphertext = excluded.ciphertext,
+          updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(key)
+    .bind(nonce)
+    .bind(ciphertext)
+    .execute(pool)
+    .await
+    .context("upsert secret")?;
+    Ok(())
+}
+
+pub async fn delete_secret(pool: &SqlitePool, key: &str) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM secrets WHERE key = ?1")
+        .bind(key)
+        .execute(pool)
+        .await
+        .context("delete secret")?;
+    Ok(())
+}
+
+pub async fn read_secret(pool: &SqlitePool, key: &str) -> anyhow::Result<Option<(Vec<u8>, Vec<u8>)>> {
+    let row = sqlx::query("SELECT nonce, ciphertext FROM secrets WHERE key = ?1")
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+        .context("read secret")?;
+    Ok(row.map(|r| (r.get::<Vec<u8>, _>(0), r.get::<Vec<u8>, _>(1))))
 }
 
 pub async fn try_mark_event_processed(
@@ -302,3 +358,52 @@ pub async fn list_recent_tasks(pool: &SqlitePool, limit: i64) -> anyhow::Result<
         .collect())
 }
 
+pub async fn get_session(pool: &SqlitePool, conversation_key: &str) -> anyhow::Result<Option<Session>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+          conversation_key,
+          codex_thread_id,
+          memory_summary,
+          last_used_at
+        FROM sessions
+        WHERE conversation_key = ?1
+        "#,
+    )
+    .bind(conversation_key)
+    .fetch_optional(pool)
+    .await
+    .context("select session")?;
+
+    Ok(row.map(|r| Session {
+        conversation_key: r.get::<String, _>("conversation_key"),
+        codex_thread_id: r.get::<Option<String>, _>("codex_thread_id"),
+        memory_summary: r.get::<String, _>("memory_summary"),
+        last_used_at: r.get::<i64, _>("last_used_at"),
+    }))
+}
+
+pub async fn upsert_session(pool: &SqlitePool, session: &Session) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO sessions (
+          conversation_key,
+          codex_thread_id,
+          memory_summary,
+          last_used_at
+        )
+        VALUES (?1, ?2, ?3, unixepoch())
+        ON CONFLICT(conversation_key) DO UPDATE SET
+          codex_thread_id = excluded.codex_thread_id,
+          memory_summary = excluded.memory_summary,
+          last_used_at = excluded.last_used_at
+        "#,
+    )
+    .bind(&session.conversation_key)
+    .bind(session.codex_thread_id.as_deref())
+    .bind(&session.memory_summary)
+    .execute(pool)
+    .await
+    .context("upsert session")?;
+    Ok(())
+}

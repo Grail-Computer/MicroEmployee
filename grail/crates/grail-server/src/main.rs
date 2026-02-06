@@ -1,4 +1,7 @@
+mod bootstrap;
+mod codex;
 mod config;
+mod crypto;
 mod db;
 mod models;
 mod slack;
@@ -23,6 +26,7 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
+use crate::crypto::{Crypto, parse_master_key};
 use crate::models::PermissionsMode;
 use crate::slack::{verify_slack_signature, SlackClient};
 use crate::templates::{SettingsTemplate, StatusTemplate, TasksTemplate};
@@ -62,7 +66,7 @@ struct AppState {
     config: Arc<Config>,
     pool: SqlitePool,
     slack: Option<SlackClient>,
-    http: reqwest::Client,
+    crypto: Option<Arc<Crypto>>,
 }
 
 #[tokio::main]
@@ -74,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
     let config = Arc::new(Config::parse());
 
     tokio::fs::create_dir_all(&config.data_dir).await?;
+    bootstrap::ensure_defaults(&config.data_dir).await?;
     let db_path = config.data_dir.join("grail.sqlite");
     let pool = db::init_sqlite(&db_path).await?;
 
@@ -81,13 +86,22 @@ async fn main() -> anyhow::Result<()> {
     let slack = config
         .slack_bot_token
         .clone()
-        .map(|t| SlackClient::new(http.clone(), t));
+        .map(|t| SlackClient::new(http, t));
 
     let state = AppState {
         config: config.clone(),
         pool,
         slack,
-        http,
+        crypto: config
+            .master_key
+            .as_deref()
+            .and_then(|k| match parse_master_key(k) {
+                Ok(bytes) => Some(Arc::new(Crypto::new(&bytes))),
+                Err(err) => {
+                    warn!(error = %err, "invalid GRAIL_MASTER_KEY; secrets UI disabled");
+                    None
+                }
+            }),
     };
 
     // Background worker (single concurrency).
@@ -97,6 +111,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(|| async { Redirect::to("/admin/status") }))
         .route("/status", get(admin_status))
         .route("/settings", get(admin_settings_get).post(admin_settings_post))
+        .route("/secrets/openai", post(admin_set_openai_api_key))
+        .route("/secrets/openai/delete", post(admin_delete_openai_api_key))
         .route("/tasks", get(admin_tasks))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -177,6 +193,8 @@ async fn admin_status(State(state): State<AppState>) -> AppResult<Html<String>> 
         active: "status",
         slack_signing_secret_set: state.config.slack_signing_secret.is_some(),
         slack_bot_token_set: state.config.slack_bot_token.is_some(),
+        openai_api_key_set: openai_api_key_configured(&state).await?,
+        master_key_set: state.crypto.is_some(),
         queue_depth,
         permissions_mode: settings.permissions_mode.as_db_str().to_string(),
     };
@@ -188,7 +206,15 @@ async fn admin_settings_get(State(state): State<AppState>) -> AppResult<Html<Str
     let tpl = SettingsTemplate {
         active: "settings",
         context_last_n: settings.context_last_n,
+        model: settings.model.unwrap_or_default(),
+        reasoning_effort: settings.reasoning_effort.unwrap_or_default(),
+        reasoning_summary: settings.reasoning_summary.unwrap_or_default(),
         permissions_mode: settings.permissions_mode.as_db_str().to_string(),
+        allow_slack_mcp: settings.allow_slack_mcp,
+        allow_context_writes: settings.allow_context_writes,
+        shell_network_access: settings.shell_network_access,
+        master_key_set: state.crypto.is_some(),
+        openai_api_key_set: openai_api_key_configured(&state).await?,
     };
     Ok(Html(tpl.render()?))
 }
@@ -196,20 +222,84 @@ async fn admin_settings_get(State(state): State<AppState>) -> AppResult<Html<Str
 #[derive(Debug, Deserialize)]
 struct SettingsForm {
     context_last_n: i64,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+    reasoning_summary: Option<String>,
     permissions_mode: String,
+    allow_slack_mcp: Option<String>,
+    allow_context_writes: Option<String>,
+    shell_network_access: Option<String>,
 }
 
 async fn admin_settings_post(
     State(state): State<AppState>,
     Form(form): Form<SettingsForm>,
 ) -> AppResult<Redirect> {
-    let n = form.context_last_n.clamp(1, 200);
-    let mode = match form.permissions_mode.as_str() {
+    let mut settings = db::get_settings(&state.pool).await?;
+
+    settings.context_last_n = form.context_last_n.clamp(1, 200);
+    settings.permissions_mode = match form.permissions_mode.as_str() {
         "full" => PermissionsMode::Full,
         _ => PermissionsMode::Read,
     };
-    db::update_settings(&state.pool, n, mode).await?;
+
+    settings.model = normalize_optional_string(form.model);
+    settings.reasoning_effort = normalize_optional_string(form.reasoning_effort);
+    settings.reasoning_summary = normalize_optional_string(form.reasoning_summary);
+
+    settings.allow_slack_mcp = form.allow_slack_mcp.is_some();
+    settings.allow_context_writes = form.allow_context_writes.is_some();
+    settings.shell_network_access = form.shell_network_access.is_some();
+
+    db::update_settings(&state.pool, &settings).await?;
     Ok(Redirect::to("/admin/settings"))
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiKeyForm {
+    openai_api_key: String,
+}
+
+async fn admin_set_openai_api_key(
+    State(state): State<AppState>,
+    Form(form): Form<OpenAiKeyForm>,
+) -> AppResult<Redirect> {
+    let Some(crypto) = state.crypto.as_deref() else {
+        return Err(anyhow::anyhow!("GRAIL_MASTER_KEY is required to store secrets").into());
+    };
+
+    let key = form.openai_api_key.trim();
+    if key.is_empty() {
+        return Ok(Redirect::to("/admin/settings"));
+    }
+
+    let (nonce, ciphertext) = crypto.encrypt(b"openai_api_key", key.as_bytes())?;
+    db::upsert_secret(&state.pool, "openai_api_key", &nonce, &ciphertext).await?;
+    Ok(Redirect::to("/admin/settings"))
+}
+
+async fn admin_delete_openai_api_key(State(state): State<AppState>) -> AppResult<Redirect> {
+    db::delete_secret(&state.pool, "openai_api_key").await?;
+    Ok(Redirect::to("/admin/settings"))
+}
+
+fn normalize_optional_string(v: Option<String>) -> Option<String> {
+    let Some(s) = v else { return None };
+    let s = s.trim();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
+}
+
+async fn openai_api_key_configured(state: &AppState) -> anyhow::Result<bool> {
+    if std::env::var("OPENAI_API_KEY").is_ok() {
+        return Ok(true);
+    }
+    Ok(db::read_secret(&state.pool, "openai_api_key")
+        .await?
+        .is_some())
 }
 
 async fn admin_tasks(State(state): State<AppState>) -> AppResult<Html<String>> {

@@ -10,6 +10,7 @@
         <th>Channel</th>
         <th>Thread TS</th>
         <th>Prompt</th>
+        <th>Result / Error</th>
         <th>Created</th>
       </tr>
     </thead>
@@ -21,10 +22,17 @@
           <td>{{ t.channel_id }}</td>
           <td>{{ t.thread_ts }}</td>
           <td style="max-width: 420px; color: var(--muted);">{{ t.prompt_text }}</td>
+          <td style="max-width: 420px; color: var(--muted);">
+            {% if t.result_text != "" %}
+              {{ t.result_text }}
+            {% endif %}
+            {% if t.error_text != "" %}
+              <span style="color: rgba(255,107,107,0.95);">{{ t.error_text }}</span>
+            {% endif %}
+          </td>
           <td style="color: var(--muted);">{{ t.created_at }}</td>
         </tr>
       {% endfor %}
     </tbody>
   </table>
 {% endblock %}
-

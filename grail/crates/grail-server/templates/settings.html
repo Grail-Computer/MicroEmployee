@@ -6,17 +6,94 @@
     <label for="context_last_n">Slack context: last N messages</label>
     <input id="context_last_n" name="context_last_n" type="number" min="1" max="200" value="{{ context_last_n }}" />
 
+    <label for="model">Model (optional override)</label>
+    <input id="model" name="model" type="text" placeholder="e.g. gpt-5.1-codex" value="{{ model }}" />
+
+    <label for="reasoning_effort">Reasoning effort</label>
+    <select id="reasoning_effort" name="reasoning_effort">
+      <option value="" {% if reasoning_effort == "" %}selected{% endif %}>Default</option>
+      <option value="none" {% if reasoning_effort == "none" %}selected{% endif %}>none</option>
+      <option value="minimal" {% if reasoning_effort == "minimal" %}selected{% endif %}>minimal</option>
+      <option value="low" {% if reasoning_effort == "low" %}selected{% endif %}>low</option>
+      <option value="medium" {% if reasoning_effort == "medium" %}selected{% endif %}>medium</option>
+      <option value="high" {% if reasoning_effort == "high" %}selected{% endif %}>high</option>
+      <option value="xhigh" {% if reasoning_effort == "xhigh" %}selected{% endif %}>xhigh</option>
+    </select>
+
+    <label for="reasoning_summary">Reasoning summary</label>
+    <select id="reasoning_summary" name="reasoning_summary">
+      <option value="" {% if reasoning_summary == "" %}selected{% endif %}>Default</option>
+      <option value="auto" {% if reasoning_summary == "auto" %}selected{% endif %}>auto</option>
+      <option value="concise" {% if reasoning_summary == "concise" %}selected{% endif %}>concise</option>
+      <option value="detailed" {% if reasoning_summary == "detailed" %}selected{% endif %}>detailed</option>
+      <option value="none" {% if reasoning_summary == "none" %}selected{% endif %}>none</option>
+    </select>
+
     <label for="permissions_mode">Agent permissions</label>
     <select id="permissions_mode" name="permissions_mode">
       <option value="read" {% if permissions_mode == "read" %}selected{% endif %}>Read-only (no commands, no writes)</option>
       <option value="full" {% if permissions_mode == "full" %}selected{% endif %}>Full (commands + context writes)</option>
     </select>
 
+    <label>Slack tools (MCP)</label>
+    <div style="display:flex; align-items:center; gap:10px; margin-top:6px;">
+      <input id="allow_slack_mcp" name="allow_slack_mcp" type="checkbox" value="1" {% if allow_slack_mcp %}checked{% endif %} style="width:auto;" />
+      <label for="allow_slack_mcp" style="margin:0; color: var(--text);">Enable Slack tools</label>
+    </div>
+
+    <label>Context writes</label>
+    <div style="display:flex; align-items:center; gap:10px; margin-top:6px;">
+      <input id="allow_context_writes" name="allow_context_writes" type="checkbox" value="1" {% if allow_context_writes %}checked{% endif %} style="width:auto;" />
+      <label for="allow_context_writes" style="margin:0; color: var(--text);">Allow writing to /data/context</label>
+    </div>
+
+    <label>Shell network access (full mode only)</label>
+    <div style="display:flex; align-items:center; gap:10px; margin-top:6px;">
+      <input id="shell_network_access" name="shell_network_access" type="checkbox" value="1" {% if shell_network_access %}checked{% endif %} style="width:auto;" />
+      <label for="shell_network_access" style="margin:0; color: var(--text);">Allow outbound network for shell commands</label>
+    </div>
+
     <button type="submit">Save</button>
   </form>
 
+  <h3 style="margin:18px 0 10px 0;">Credentials</h3>
+
+  {% if master_key_set %}
+    <div class="grid" style="margin-bottom: 12px;">
+      <div class="kv">
+        <div class="k">OPENAI_API_KEY</div>
+        <div class="v">
+          {% if openai_api_key_set %}
+            <span class="pill ok">set</span>
+          {% else %}
+            <span class="pill bad">missing</span>
+          {% endif %}
+        </div>
+      </div>
+      <div class="kv">
+        <div class="k">Storage</div>
+        <div class="v"><span class="pill">SQLite (encrypted)</span></div>
+      </div>
+    </div>
+
+    <form method="post" action="/admin/secrets/openai">
+      <label for="openai_api_key">Set OpenAI API key</label>
+      <input id="openai_api_key" name="openai_api_key" type="password" placeholder="sk-..." />
+      <button type="submit">Save Key</button>
+    </form>
+
+    <form method="post" action="/admin/secrets/openai/delete">
+      <button type="submit" style="border-color: rgba(255,107,107,0.35); background: rgba(255,107,107,0.10); color: rgba(255,107,107,0.95);">
+        Clear Stored Key
+      </button>
+    </form>
+  {% else %}
+    <p style="margin: 0; color: var(--muted);">
+      Set <span class="pill">GRAIL_MASTER_KEY</span> to enable storing secrets in SQLite. As an alternative, set <span class="pill">OPENAI_API_KEY</span> as an environment variable.
+    </p>
+  {% endif %}
+
   <p style="margin:16px 0 0 0; color: var(--muted);">
-    In read-only mode, Grail will still answer in Slack, but Codex side-effects are disabled.
+    In read-only mode, Grail will still answer in Slack, but command execution and context writes are disabled.
   </p>
 {% endblock %}
-
