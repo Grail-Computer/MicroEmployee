@@ -28,10 +28,17 @@ COPY --from=builder /app/grail/target/release/grail-server /usr/local/bin/grail-
 COPY --from=builder /app/grail/target/release/grail-slack-mcp /usr/local/bin/grail-slack-mcp
 
 # Install Codex CLI (Linux x86_64 musl) from GitHub releases.
+ARG CODEX_VERSION=rust-v0.98.0
+ARG TARGETARCH
 RUN set -eux; \
-    curl -fsSL "https://github.com/openai/codex/releases/latest/download/codex-x86_64-unknown-linux-musl.tar.gz" -o /tmp/codex.tgz; \
+    case "${TARGETARCH}" in \
+      amd64) COD_ARCH="x86_64" ;; \
+      arm64) COD_ARCH="aarch64" ;; \
+      *) echo "Unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/openai/codex/releases/download/${CODEX_VERSION}/codex-${COD_ARCH}-unknown-linux-musl.tar.gz" -o /tmp/codex.tgz; \
     tar -xzf /tmp/codex.tgz -C /tmp; \
-    mv /tmp/codex-x86_64-unknown-linux-musl /usr/local/bin/codex; \
+    mv "/tmp/codex-${COD_ARCH}-unknown-linux-musl" /usr/local/bin/codex; \
     chmod +x /usr/local/bin/codex; \
     rm -f /tmp/codex.tgz
 

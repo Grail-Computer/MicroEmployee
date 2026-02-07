@@ -12,6 +12,16 @@ use crate::AppState;
 pub async fn worker_loop(state: AppState) {
     let mut codex = CodexManager::new(state.config.clone());
 
+    match db::reset_running_tasks(&state.pool).await {
+        Ok(n) if n > 0 => {
+            warn!(count = n, "re-queued tasks left in running state after restart");
+        }
+        Ok(_) => {}
+        Err(err) => {
+            warn!(error = %err, "failed to reset running tasks on startup");
+        }
+    }
+
     loop {
         match db::claim_next_task(&state.pool).await {
             Ok(Some(task)) => {

@@ -267,6 +267,21 @@ pub async fn claim_next_task(pool: &SqlitePool) -> anyhow::Result<Option<Task>> 
     }))
 }
 
+pub async fn reset_running_tasks(pool: &SqlitePool) -> anyhow::Result<u64> {
+    let res = sqlx::query(
+        r#"
+        UPDATE tasks
+        SET status = 'queued',
+            started_at = NULL
+        WHERE status = 'running'
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("reset running tasks")?;
+    Ok(res.rows_affected())
+}
+
 pub async fn complete_task_success(
     pool: &SqlitePool,
     task_id: i64,

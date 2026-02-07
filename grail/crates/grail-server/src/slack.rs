@@ -54,10 +54,12 @@ pub fn verify_slack_signature(
         return Err(SlackSignatureError::TimestampTooOld);
     }
 
-    let base = format!("v0:{ts}:{}", String::from_utf8_lossy(body));
     let mut mac =
         HmacSha256::new_from_slice(signing_secret.as_bytes()).expect("HMAC key valid");
-    mac.update(base.as_bytes());
+    mac.update(b"v0:");
+    mac.update(timestamp.as_bytes());
+    mac.update(b":");
+    mac.update(body);
     let expected = format!("v0={}", hex::encode(mac.finalize().into_bytes()));
 
     // Constant-time compare.
@@ -96,6 +98,8 @@ impl SlackClient {
         thread_ts: &str,
         text: &str,
     ) -> anyhow::Result<()> {
+        const SLACK_TEXT_MAX_BYTES: usize = 35_000;
+
         #[derive(Serialize)]
         struct Req<'a> {
             channel: &'a str,
@@ -103,27 +107,29 @@ impl SlackClient {
             thread_ts: &'a str,
         }
 
-        let resp: SlackApiResponse<serde_json::Value> = self
-            .http
-            .post("https://slack.com/api/chat.postMessage")
-            .headers(self.headers())
-            .json(&Req {
-                channel,
-                text,
-                thread_ts,
-            })
-            .send()
-            .await
-            .context("slack chat.postMessage request")?
-            .json()
-            .await
-            .context("slack chat.postMessage decode")?;
+        for chunk in split_slack_text(text, SLACK_TEXT_MAX_BYTES) {
+            let resp: SlackApiResponse<serde_json::Value> = self
+                .http
+                .post("https://slack.com/api/chat.postMessage")
+                .headers(self.headers())
+                .json(&Req {
+                    channel,
+                    text: &chunk,
+                    thread_ts,
+                })
+                .send()
+                .await
+                .context("slack chat.postMessage request")?
+                .json()
+                .await
+                .context("slack chat.postMessage decode")?;
 
-        if !resp.ok {
-            anyhow::bail!(
-                "slack chat.postMessage failed: {}",
-                resp.error.unwrap_or_else(|| "unknown_error".to_string())
-            );
+            if !resp.ok {
+                anyhow::bail!(
+                    "slack chat.postMessage failed: {}",
+                    resp.error.unwrap_or_else(|| "unknown_error".to_string())
+                );
+            }
         }
         Ok(())
     }
@@ -228,3 +234,41 @@ pub struct SlackMessage {
     pub subtype: Option<String>,
 }
 
+fn split_slack_text(text: &str, max_bytes: usize) -> Vec<String> {
+    let t = text.trim();
+    if t.is_empty() {
+        return vec!["(empty)".to_string()];
+    }
+    if t.len() <= max_bytes {
+        return vec![t.to_string()];
+    }
+
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    while start < t.len() {
+        let mut end = (start + max_bytes).min(t.len());
+        while end > start && !t.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == start {
+            break;
+        }
+
+        // Prefer splitting at a newline, but don't create tiny chunks.
+        if let Some(pos) = t[start..end].rfind('\n') {
+            let candidate = start + pos + 1;
+            if candidate > start + (max_bytes / 2) {
+                end = candidate;
+            }
+        }
+
+        out.push(t[start..end].trim().to_string());
+        start = end;
+    }
+
+    if out.is_empty() {
+        vec![t.chars().take(1000).collect()]
+    } else {
+        out
+    }
+}

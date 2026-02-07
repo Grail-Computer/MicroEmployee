@@ -12,9 +12,9 @@ mod worker;
 	use std::time::Duration;
 
 	use anyhow::Context;
-	use askama::Template;
+use askama::Template;
 use axum::body::Bytes;
-use axum::extract::{Form, State};
+use axum::extract::{DefaultBodyLimit, Form, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware;
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -130,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/slack/events", post(slack_events))
         .nest("/admin", admin)
         .with_state(state)
+        .layer(DefaultBodyLimit::max(1024 * 1024))
         .layer(TraceLayer::new_for_http());
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.port));
