@@ -1360,8 +1360,11 @@ async fn slack_events(
                     bot_id,
                     ..
                 } => {
-                    // Only handle direct messages (IMs). Channel mentions should use app_mention.
-                    if channel_type.as_deref().unwrap_or("") != "im" {
+                    // Only handle direct messages (IMs and multi-person IMs).
+                    // Channel traffic should go through app_mention to avoid responding
+                    // to every message.
+                    let ct = channel_type.as_deref().unwrap_or("");
+                    if ct != "im" && ct != "mpim" {
                         return (StatusCode::OK, "").into_response();
                     }
                     // Ignore bot messages and non-user subtypes to avoid loops.
