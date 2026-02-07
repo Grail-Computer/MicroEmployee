@@ -1,0 +1,27 @@
+{% extends "layout.html" %}
+
+{% block title %}Diagnostics{% endblock %}
+
+{% block content %}
+  <h2>Diagnostics</h2>
+  <p class="k">Run quick self-tests without sending messages in Slack/Telegram.</p>
+
+  <form method="post" action="/admin/diagnostics/codex">
+    <button type="submit">Run Codex Self-Test</button>
+  </form>
+
+  {% if codex_error.is_some() %}
+    <div class="kv" style="border-color: rgba(255, 107, 107, 0.35); margin-top: 14px;">
+      <div class="k">Codex self-test error</div>
+      <pre class="v" style="white-space: pre-wrap;">{{ codex_error.as_ref().unwrap() }}</pre>
+    </div>
+  {% endif %}
+
+  {% if codex_result.is_some() %}
+    <div class="kv" style="margin-top: 14px;">
+      <div class="k">Codex self-test output (raw)</div>
+      <pre class="v" style="white-space: pre-wrap;">{{ codex_result.as_ref().unwrap() }}</pre>
+    </div>
+  {% endif %}
+{% endblock %}
+

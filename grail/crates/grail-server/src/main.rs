@@ -47,8 +47,8 @@ use crate::secrets::{
 use crate::slack::{verify_slack_signature, SlackClient};
 use crate::templates::{
     ApprovalsTemplate, AuthTemplate, ContextEditTemplate, ContextTemplate, CronTemplate,
-    DeviceLoginRow, GuardrailsTemplate, MemoryTemplate, SettingsTemplate, StatusTemplate,
-    TasksTemplate,
+    DeviceLoginRow, DiagnosticsTemplate, GuardrailsTemplate, MemoryTemplate, SettingsTemplate,
+    StatusTemplate, TasksTemplate,
 };
 
 type AppResult<T> = Result<T, AppError>;
@@ -176,6 +176,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/tasks", get(admin_tasks))
         .route("/tasks/{id}/cancel", post(admin_task_cancel))
         .route("/tasks/{id}/retry", post(admin_task_retry))
+        .route("/diagnostics", get(admin_diagnostics_get))
+        .route("/diagnostics/codex", post(admin_diagnostics_codex_post))
         .route("/cron", get(admin_cron_get))
         .route("/cron/add", post(admin_cron_add))
         .route("/cron/{id}/delete", post(admin_cron_delete))
@@ -952,6 +954,109 @@ async fn admin_task_retry(
 ) -> AppResult<Redirect> {
     let _ = db::retry_task(&state.pool, id).await?;
     Ok(Redirect::to("/admin/tasks"))
+}
+
+async fn admin_diagnostics_get(State(_state): State<AppState>) -> AppResult<Html<String>> {
+    let tpl = DiagnosticsTemplate {
+        active: "diagnostics",
+        codex_result: None,
+        codex_error: None,
+    };
+    Ok(Html(tpl.render()?))
+}
+
+async fn admin_diagnostics_codex_post(State(state): State<AppState>) -> AppResult<Html<String>> {
+    let res = run_codex_self_test(&state).await;
+    let (codex_result, codex_error) = match res {
+        Ok(v) => (Some(v), None),
+        Err(err) => (None, Some(format!("{err:#}"))),
+    };
+    let tpl = DiagnosticsTemplate {
+        active: "diagnostics",
+        codex_result,
+        codex_error,
+    };
+    Ok(Html(tpl.render()?))
+}
+
+async fn run_codex_self_test(state: &AppState) -> anyhow::Result<String> {
+    let mut settings = db::get_settings(&state.pool).await?;
+    // Keep diagnostics safe even if the instance is configured for full permissions.
+    settings.permissions_mode = PermissionsMode::Read;
+    settings.allow_context_writes = false;
+    settings.allow_cron = false;
+    settings.allow_slack_mcp = false;
+    settings.allow_web_mcp = false;
+
+    let openai_api_key = crate::secrets::load_openai_api_key_opt(state).await?;
+    if openai_api_key.is_none() {
+        let codex_home = state.config.effective_codex_home();
+        let auth_summary = crate::codex_login::read_auth_summary(&codex_home).await?;
+        if !auth_summary.file_present {
+            anyhow::bail!(
+                "OpenAI auth not configured. Set OPENAI_API_KEY (env), store it in /admin/settings, or log in via /admin/auth."
+            );
+        }
+    }
+
+    let cwd = state.config.data_dir.join("context");
+    let cwd = tokio::fs::canonicalize(&cwd).await.unwrap_or(cwd);
+
+    let mut codex = crate::codex::CodexManager::new(state.config.clone());
+    codex
+        .ensure_started(
+            openai_api_key.as_deref(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+        )
+        .await?;
+
+    let thread_id = codex.resume_or_start_thread(None, &settings, &cwd).await?;
+    let now = chrono::Utc::now().timestamp();
+    let task = crate::models::Task {
+        id: 0,
+        status: "diagnostic".to_string(),
+        provider: "admin".to_string(),
+        workspace_id: "admin".to_string(),
+        channel_id: "admin".to_string(),
+        thread_ts: "".to_string(),
+        event_ts: format!("{now}"),
+        requested_by_user_id: "admin".to_string(),
+        prompt_text: "diagnostic".to_string(),
+        result_text: None,
+        error_text: None,
+        created_at: now,
+        started_at: Some(now),
+        finished_at: None,
+    };
+
+    let input_text = r#"Diagnostics: return ONLY a single JSON object that matches the schema.
+
+Set:
+- reply: "ok"
+- updated_memory_summary: ""
+- context_writes: []
+- cron_jobs: []
+- guardrail_rules: []
+
+Do not call tools."#;
+
+    let schema = crate::worker::agent_output_schema();
+    let result = codex
+        .run_turn(
+            state, &task, &thread_id, &settings, &cwd, input_text, schema,
+        )
+        .await
+        .map(|o| o.agent_message_text);
+
+    codex.stop().await;
+    result
 }
 
 async fn admin_cron_get(State(state): State<AppState>) -> AppResult<Html<String>> {

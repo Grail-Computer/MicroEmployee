@@ -559,108 +559,7 @@ async fn process_task(
         allow_web_mcp,
     );
 
-    // NOTE: Codex forwards this schema to the OpenAI "structured outputs" backend.
-    // That backend requires that for every object schema:
-    // - `required` is present
-    // - `required` contains *every* key in `properties`
-    // Optional fields must be represented as nullable (e.g., `anyOf: [{...}, {type:null}]`).
-    let output_schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "reply": { "type": "string" },
-            "updated_memory_summary": { "type": "string" },
-            "context_writes": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "path": { "type": "string" },
-                        "content": { "type": "string" }
-                    },
-                    "required": ["path", "content"],
-                    "additionalProperties": false
-                }
-            },
-            "cron_jobs": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "name": { "type": "string" },
-                        "mode": {
-                            "anyOf": [
-                                { "type": "string", "enum": ["agent", "message"] },
-                                { "type": "null" }
-                            ],
-                            "default": "agent"
-                        },
-                        "schedule_kind": { "type": "string", "enum": ["every", "cron", "at"] },
-                        "every_seconds": {
-                            "anyOf": [
-                                { "type": "integer", "minimum": 1 },
-                                { "type": "null" }
-                            ]
-                        },
-                        "cron_expr": {
-                            "anyOf": [
-                                { "type": "string" },
-                                { "type": "null" }
-                            ]
-                        },
-                        "at_ts": {
-                            "anyOf": [
-                                { "type": "integer" },
-                                { "type": "null" }
-                            ]
-                        },
-                        "thread_ts": {
-                            "anyOf": [
-                                { "type": "string" },
-                                { "type": "null" }
-                            ],
-                            "description": "Optional override. null => use current thread. Empty string => post in channel (no thread)."
-                        },
-                        "prompt_text": { "type": "string" }
-                    },
-                    "required": ["name", "mode", "schedule_kind", "every_seconds", "cron_expr", "at_ts", "thread_ts", "prompt_text"],
-                    "additionalProperties": false
-                },
-                "default": []
-            },
-            "guardrail_rules": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "name": { "type": "string" },
-                        "kind": { "type": "string", "enum": ["command"] },
-                        "pattern_kind": { "type": "string", "enum": ["regex", "exact", "substring"] },
-                        "pattern": { "type": "string" },
-                        "action": { "type": "string", "enum": ["allow", "require_approval", "deny"] },
-                        "priority": {
-                            "anyOf": [
-                                { "type": "integer" },
-                                { "type": "null" }
-                            ],
-                            "default": 100
-                        },
-                        "enabled": {
-                            "anyOf": [
-                                { "type": "boolean" },
-                                { "type": "null" }
-                            ],
-                            "default": true
-                        }
-                    },
-                    "required": ["name", "kind", "pattern_kind", "pattern", "action", "priority", "enabled"],
-                    "additionalProperties": false
-                },
-                "default": []
-            }
-        },
-        "required": ["reply", "updated_memory_summary", "context_writes", "cron_jobs", "guardrail_rules"],
-        "additionalProperties": false
-    });
+    let output_schema = agent_output_schema();
 
     let out = codex
         .run_turn(
@@ -785,6 +684,111 @@ fn thread_opt(thread_ts: &str) -> Option<&str> {
     } else {
         Some(t)
     }
+}
+
+pub fn agent_output_schema() -> serde_json::Value {
+    // NOTE: Codex forwards this schema to the OpenAI "structured outputs" backend.
+    // That backend requires that for every object schema:
+    // - `required` is present
+    // - `required` contains *every* key in `properties`
+    // Optional fields must be represented as nullable (e.g., `anyOf: [{...}, {type:null}]`).
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "reply": { "type": "string" },
+            "updated_memory_summary": { "type": "string" },
+            "context_writes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" },
+                        "content": { "type": "string" }
+                    },
+                    "required": ["path", "content"],
+                    "additionalProperties": false
+                }
+            },
+            "cron_jobs": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "mode": {
+                            "anyOf": [
+                                { "type": "string", "enum": ["agent", "message"] },
+                                { "type": "null" }
+                            ],
+                            "default": "agent"
+                        },
+                        "schedule_kind": { "type": "string", "enum": ["every", "cron", "at"] },
+                        "every_seconds": {
+                            "anyOf": [
+                                { "type": "integer", "minimum": 1 },
+                                { "type": "null" }
+                            ]
+                        },
+                        "cron_expr": {
+                            "anyOf": [
+                                { "type": "string" },
+                                { "type": "null" }
+                            ]
+                        },
+                        "at_ts": {
+                            "anyOf": [
+                                { "type": "integer" },
+                                { "type": "null" }
+                            ]
+                        },
+                        "thread_ts": {
+                            "anyOf": [
+                                { "type": "string" },
+                                { "type": "null" }
+                            ],
+                            "description": "Optional override. null => use current thread. Empty string => post in channel (no thread)."
+                        },
+                        "prompt_text": { "type": "string" }
+                    },
+                    "required": ["name", "mode", "schedule_kind", "every_seconds", "cron_expr", "at_ts", "thread_ts", "prompt_text"],
+                    "additionalProperties": false
+                },
+                "default": []
+            },
+            "guardrail_rules": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "kind": { "type": "string", "enum": ["command"] },
+                        "pattern_kind": { "type": "string", "enum": ["regex", "exact", "substring"] },
+                        "pattern": { "type": "string" },
+                        "action": { "type": "string", "enum": ["allow", "require_approval", "deny"] },
+                        "priority": {
+                            "anyOf": [
+                                { "type": "integer" },
+                                { "type": "null" }
+                            ],
+                            "default": 100
+                        },
+                        "enabled": {
+                            "anyOf": [
+                                { "type": "boolean" },
+                                { "type": "null" }
+                            ],
+                            "default": true
+                        }
+                    },
+                    "required": ["name", "kind", "pattern_kind", "pattern", "action", "priority", "enabled"],
+                    "additionalProperties": false
+                },
+                "default": []
+            }
+        },
+        "required": ["reply", "updated_memory_summary", "context_writes", "cron_jobs", "guardrail_rules"],
+        "additionalProperties": false
+    })
 }
 
 async fn send_user_message(

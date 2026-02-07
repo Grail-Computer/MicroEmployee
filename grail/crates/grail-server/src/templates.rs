@@ -122,6 +122,14 @@ pub struct ContextEditTemplate {
     pub bytes: String,
 }
 
+#[derive(Template)]
+#[template(path = "diagnostics.html")]
+pub struct DiagnosticsTemplate {
+    pub active: &'static str,
+    pub codex_result: Option<String>,
+    pub codex_error: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct TaskRow {
     pub id: i64,
