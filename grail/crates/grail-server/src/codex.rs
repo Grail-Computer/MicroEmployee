@@ -516,9 +516,11 @@ async fn spawn_codex_app_server(
     // `--listen stdio://` while others default to stdio and reject `--listen`.
     // To be resilient, try the newer syntax first, then fall back to the minimal
     // invocation.
+    // Try the minimal form first. Newer versions that also support `--listen`
+    // still default to stdio, while some older builds reject `--listen`.
     for args in [
-        vec!["app-server", "--listen", "stdio://"],
         vec!["app-server"],
+        vec!["app-server", "--listen", "stdio://"],
     ] {
         match spawn_codex_with_args(
             codex_bin,
