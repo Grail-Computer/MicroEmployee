@@ -116,7 +116,7 @@ function FileViewer() {
     <>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Link to="/context" style={{ color: 'var(--text-secondary)', fontSize: 14 }}>← Context</Link>
+          <Link to="/admin/context" style={{ color: 'var(--text-secondary)', fontSize: 14 }}>← Context</Link>
           <span style={{ color: 'var(--text-tertiary)' }}>/</span>
           <h2 style={{ margin: 0, fontSize: 16 }}>{path}</h2>
         </div>
@@ -165,7 +165,7 @@ function FileEditor() {
     <>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Link to="/context" style={{ color: 'var(--text-secondary)', fontSize: 14 }}>← Context</Link>
+          <Link to="/admin/context" style={{ color: 'var(--text-secondary)', fontSize: 14 }}>← Context</Link>
           <span style={{ color: 'var(--text-tertiary)' }}>/</span>
           <h2 style={{ margin: 0, fontSize: 16 }}>Editing: {path}</h2>
         </div>

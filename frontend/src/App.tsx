@@ -15,17 +15,18 @@ export default function App() {
   return (
     <Layout>
       <Routes>
-        <Route path="/" element={<Navigate to="/status" replace />} />
-        <Route path="/status" element={<StatusPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/tasks" element={<TasksPage />} />
-        <Route path="/cron" element={<CronPage />} />
-        <Route path="/guardrails" element={<GuardrailsPage />} />
-        <Route path="/approvals" element={<ApprovalsPage />} />
-        <Route path="/memory" element={<MemoryPage />} />
-        <Route path="/context/*" element={<ContextPage />} />
-        <Route path="/auth" element={<AuthPage />} />
-        <Route path="/diagnostics" element={<DiagnosticsPage />} />
+        <Route path="/" element={<Navigate to="/admin/status" replace />} />
+        <Route path="/admin" element={<Navigate to="/admin/status" replace />} />
+        <Route path="/admin/status" element={<StatusPage />} />
+        <Route path="/admin/settings" element={<SettingsPage />} />
+        <Route path="/admin/tasks" element={<TasksPage />} />
+        <Route path="/admin/cron" element={<CronPage />} />
+        <Route path="/admin/guardrails" element={<GuardrailsPage />} />
+        <Route path="/admin/approvals" element={<ApprovalsPage />} />
+        <Route path="/admin/memory" element={<MemoryPage />} />
+        <Route path="/admin/context/*" element={<ContextPage />} />
+        <Route path="/admin/auth" element={<AuthPage />} />
+        <Route path="/admin/diagnostics" element={<DiagnosticsPage />} />
       </Routes>
     </Layout>
   );

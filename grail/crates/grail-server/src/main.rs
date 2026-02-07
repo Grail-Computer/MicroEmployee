@@ -260,7 +260,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/slack/events", post(slack_events))
         .route("/slack/actions", post(slack_actions))
         .route("/telegram/webhook", post(telegram_webhook))
-        .nest("/admin", admin)
+        // Old Askama HTML admin routes removed — React SPA served via fallback.
         .nest("/api/admin", api_routes);
 
     // If frontend-dist dir exists, serve the SPA from it as fallback.
