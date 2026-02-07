@@ -30,6 +30,7 @@ pub struct CodexManager {
     proc: Option<CodexProc>,
     last_env_fingerprint: Option<String>,
     last_config_fingerprint: Option<String>,
+    last_auth_fingerprint: Option<String>,
 }
 
 impl CodexManager {
@@ -39,12 +40,13 @@ impl CodexManager {
             proc: None,
             last_env_fingerprint: None,
             last_config_fingerprint: None,
+            last_auth_fingerprint: None,
         }
     }
 
     pub async fn ensure_started(
         &mut self,
-        openai_api_key: &str,
+        openai_api_key: Option<&str>,
         slack_bot_token: Option<&str>,
         allow_slack_mcp: bool,
     ) -> anyhow::Result<()> {
@@ -65,11 +67,23 @@ impl CodexManager {
             self.last_config_fingerprint = Some(cfg_fp);
         }
 
+        // Detect auth changes (ChatGPT device login writes CODEX_HOME/auth.json).
+        let auth_path = codex_home.join("auth.json");
+        let auth_fp = match tokio::fs::read(&auth_path).await {
+            Ok(bytes) => sha256_hex(&bytes),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => "missing".to_string(),
+            Err(err) => {
+                warn!(error = %err, "failed to read auth.json fingerprint; forcing restart");
+                "error".to_string()
+            }
+        };
+        let auth_changed = self.last_auth_fingerprint.as_deref() != Some(&auth_fp);
+
         // Restart the app-server if the auth inputs changed.
         let env_fp = sha256_hex(
             format!(
                 "openai_api_key={};slack_bot_token={};codex_home={}",
-                openai_api_key,
+                openai_api_key.unwrap_or(""),
                 slack_bot_token.unwrap_or(""),
                 codex_home.display()
             )
@@ -93,7 +107,7 @@ impl CodexManager {
             None => false,
         };
 
-        if self.proc.is_none() || needs_restart || config_changed || proc_exited {
+        if self.proc.is_none() || needs_restart || config_changed || auth_changed || proc_exited {
             self.stop().await;
             let proc = spawn_codex_app_server(
                 &self.config.codex_bin,
@@ -104,6 +118,7 @@ impl CodexManager {
             .await?;
             self.proc = Some(proc);
             self.last_env_fingerprint = Some(env_fp);
+            self.last_auth_fingerprint = Some(auth_fp);
         }
 
         Ok(())
@@ -426,7 +441,7 @@ impl CodexManager {
 async fn spawn_codex_app_server(
     codex_bin: &str,
     codex_home: &Path,
-    openai_api_key: &str,
+    openai_api_key: Option<&str>,
     slack_bot_token: Option<&str>,
 ) -> anyhow::Result<CodexProc> {
     let mut cmd = Command::new(codex_bin);
@@ -434,7 +449,9 @@ async fn spawn_codex_app_server(
     cmd.arg("--listen");
     cmd.arg("stdio://");
     cmd.env("CODEX_HOME", codex_home);
-    cmd.env("OPENAI_API_KEY", openai_api_key);
+    if let Some(key) = openai_api_key {
+        cmd.env("OPENAI_API_KEY", key);
+    }
     if let Some(t) = slack_bot_token {
         cmd.env("SLACK_BOT_TOKEN", t);
     }

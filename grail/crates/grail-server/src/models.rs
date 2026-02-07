@@ -60,3 +60,16 @@ pub struct Session {
     pub memory_summary: String,
     pub last_used_at: i64,
 }
+
+#[derive(Debug, Clone)]
+pub struct CodexDeviceLogin {
+    pub id: String,
+    pub status: String,
+    pub verification_url: String,
+    pub user_code: String,
+    pub device_auth_id: String,
+    pub interval_sec: i64,
+    pub error_text: Option<String>,
+    pub created_at: i64,
+    pub completed_at: Option<i64>,
+}

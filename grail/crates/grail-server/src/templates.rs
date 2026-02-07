@@ -37,6 +37,16 @@ pub struct TasksTemplate {
     pub tasks: Vec<TaskRow>,
 }
 
+#[derive(Template)]
+#[template(path = "auth.html")]
+pub struct AuthTemplate {
+    pub active: &'static str,
+    pub openai_api_key_set: bool,
+    pub codex_auth_file_set: bool,
+    pub codex_auth_mode: String,
+    pub device_login: Option<DeviceLoginRow>,
+}
+
 #[derive(Debug, Clone)]
 pub struct TaskRow {
     pub id: i64,
@@ -45,6 +55,15 @@ pub struct TaskRow {
     pub thread_ts: String,
     pub prompt_text: String,
     pub result_text: String,
+    pub error_text: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeviceLoginRow {
+    pub status: String,
+    pub verification_url: String,
+    pub user_code: String,
     pub error_text: String,
     pub created_at: String,
 }

@@ -1,5 +1,6 @@
 mod bootstrap;
 mod codex;
+mod codex_login;
 mod config;
 mod crypto;
 mod db;
@@ -8,10 +9,10 @@ mod slack;
 mod templates;
 mod worker;
 
-	use std::sync::Arc;
-	use std::time::Duration;
+use std::sync::Arc;
+use std::time::Duration;
 
-	use anyhow::Context;
+use anyhow::Context;
 use askama::Template;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Form, State};
@@ -31,7 +32,7 @@ use crate::config::Config;
 use crate::crypto::{Crypto, parse_master_key};
 use crate::models::PermissionsMode;
 use crate::slack::{verify_slack_signature, SlackClient};
-use crate::templates::{SettingsTemplate, StatusTemplate, TasksTemplate};
+use crate::templates::{AuthTemplate, DeviceLoginRow, SettingsTemplate, StatusTemplate, TasksTemplate};
 
 type AppResult<T> = Result<T, AppError>;
 
@@ -117,6 +118,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(|| async { Redirect::to("/admin/status") }))
         .route("/status", get(admin_status))
         .route("/settings", get(admin_settings_get).post(admin_settings_post))
+        .route("/auth", get(admin_auth_get))
+        .route("/auth/device/start", post(admin_auth_device_start))
+        .route("/auth/device/cancel", post(admin_auth_device_cancel))
+        .route("/auth/logout", post(admin_auth_logout))
         .route("/secrets/openai", post(admin_set_openai_api_key))
         .route("/secrets/openai/delete", post(admin_delete_openai_api_key))
         .route("/tasks", get(admin_tasks))
@@ -301,9 +306,16 @@ fn normalize_optional_string(v: Option<String>) -> Option<String> {
 }
 
 async fn openai_api_key_configured(state: &AppState) -> anyhow::Result<bool> {
-    if std::env::var("OPENAI_API_KEY").is_ok() {
-        return Ok(true);
+    if let Ok(v) = std::env::var("OPENAI_API_KEY") {
+        if !v.trim().is_empty() {
+            return Ok(true);
+        }
     }
+
+    if state.crypto.is_none() {
+        return Ok(false);
+    }
+
     Ok(db::read_secret(&state.pool, "openai_api_key")
         .await?
         .is_some())
@@ -316,6 +328,99 @@ async fn admin_tasks(State(state): State<AppState>) -> AppResult<Html<String>> {
         tasks: tasks.into_iter().map(Into::into).collect(),
     };
     Ok(Html(tpl.render()?))
+}
+
+async fn admin_auth_get(State(state): State<AppState>) -> AppResult<Html<String>> {
+    let codex_home = state.config.effective_codex_home();
+    let auth_summary = crate::codex_login::read_auth_summary(&codex_home).await?;
+    let latest = db::get_latest_codex_device_login(&state.pool).await?;
+    let device_login = latest.map(|l| DeviceLoginRow {
+        status: l.status,
+        verification_url: l.verification_url,
+        user_code: l.user_code,
+        error_text: l.error_text.unwrap_or_default(),
+        created_at: format!("{}", l.created_at),
+    });
+
+    let tpl = AuthTemplate {
+        active: "auth",
+        openai_api_key_set: openai_api_key_configured(&state).await?,
+        codex_auth_file_set: auth_summary.file_present,
+        codex_auth_mode: auth_summary.auth_mode,
+        device_login,
+    };
+    Ok(Html(tpl.render()?))
+}
+
+async fn admin_auth_device_start(State(state): State<AppState>) -> AppResult<Redirect> {
+    // Cancel any pending login first.
+    let _ = db::cancel_pending_codex_device_logins(&state.pool).await;
+
+    let issuer = std::env::var("CODEX_ISSUER")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| crate::codex_login::DEFAULT_ISSUER.to_string());
+    let client_id = std::env::var("CODEX_CLIENT_ID")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| crate::codex_login::DEFAULT_CLIENT_ID.to_string());
+
+    let http = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("build reqwest client")?;
+
+    let dc = crate::codex_login::request_device_code(&http, &issuer, &client_id).await?;
+    let id = random_id("codex_device_login");
+
+    let login = crate::models::CodexDeviceLogin {
+        id: id.clone(),
+        status: "pending".to_string(),
+        verification_url: dc.verification_url.clone(),
+        user_code: dc.user_code.clone(),
+        device_auth_id: dc.device_auth_id.clone(),
+        interval_sec: dc.interval_sec as i64,
+        error_text: None,
+        created_at: chrono::Utc::now().timestamp(),
+        completed_at: None,
+    };
+    db::insert_codex_device_login(&state.pool, &login).await?;
+
+    let pool = state.pool.clone();
+    let codex_home = state.config.effective_codex_home();
+    tokio::spawn(async move {
+        if let Err(err) = run_device_login_flow(
+            pool,
+            id,
+            codex_home,
+            issuer,
+            client_id,
+            dc.device_auth_id,
+            dc.user_code,
+            dc.interval_sec,
+        )
+        .await
+        {
+            warn!(error = %err, "device login flow failed");
+        }
+    });
+
+    Ok(Redirect::to("/admin/auth"))
+}
+
+async fn admin_auth_device_cancel(State(state): State<AppState>) -> AppResult<Redirect> {
+    let _ = db::cancel_pending_codex_device_logins(&state.pool).await?;
+    Ok(Redirect::to("/admin/auth"))
+}
+
+async fn admin_auth_logout(State(state): State<AppState>) -> AppResult<Redirect> {
+    let codex_home = state.config.effective_codex_home();
+    let _ = crate::codex_login::delete_auth_json(&codex_home).await?;
+    let _ = db::cancel_pending_codex_device_logins(&state.pool).await?;
+    Ok(Redirect::to("/admin/auth"))
 }
 
 async fn slack_events(
@@ -406,6 +511,96 @@ async fn slack_events(
             }
 
             (StatusCode::OK, "").into_response()
+        }
+    }
+}
+
+fn random_id(prefix: &str) -> String {
+    let mut bytes = [0u8; 16];
+    let mut rng = rand::rng();
+    rand::RngCore::fill_bytes(&mut rng, &mut bytes);
+    format!("{}_{}", prefix, hex::encode(bytes))
+}
+
+async fn run_device_login_flow(
+    pool: SqlitePool,
+    login_id: String,
+    codex_home: std::path::PathBuf,
+    issuer: String,
+    client_id: String,
+    device_auth_id: String,
+    user_code: String,
+    interval_sec: u64,
+) -> anyhow::Result<()> {
+    let http = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("build reqwest client")?;
+
+    let deadline = tokio::time::Instant::now() + crate::codex_login::default_device_login_timeout();
+    loop {
+        // Check cancellation.
+        let status = db::get_codex_device_login(&pool, &login_id)
+            .await?
+            .map(|l| l.status)
+            .unwrap_or_else(|| "missing".to_string());
+        if status != "pending" {
+            return Ok(());
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            let now = chrono::Utc::now().timestamp();
+            db::update_codex_device_login_status(
+                &pool,
+                &login_id,
+                "failed",
+                Some("device login timed out"),
+                Some(now),
+            )
+            .await?;
+            return Ok(());
+        }
+
+        match crate::codex_login::poll_device_auth(&http, &issuer, &device_auth_id, &user_code).await
+        {
+            Ok(crate::codex_login::DeviceAuthPoll::Pending) => {
+                tokio::time::sleep(Duration::from_secs(interval_sec.max(1).min(30))).await;
+            }
+            Ok(crate::codex_login::DeviceAuthPoll::Success(s)) => {
+                let tokens = crate::codex_login::exchange_code_for_tokens(
+                    &http,
+                    &issuer,
+                    &client_id,
+                    &s.authorization_code,
+                    &s.code_verifier,
+                )
+                .await?;
+
+                crate::codex_login::write_chatgpt_auth_json(&codex_home, &tokens).await?;
+                let now = chrono::Utc::now().timestamp();
+                db::update_codex_device_login_status(
+                    &pool,
+                    &login_id,
+                    "completed",
+                    None,
+                    Some(now),
+                )
+                .await?;
+                return Ok(());
+            }
+            Err(err) => {
+                let now = chrono::Utc::now().timestamp();
+                db::update_codex_device_login_status(
+                    &pool,
+                    &login_id,
+                    "failed",
+                    Some(&format!("{err:#}")),
+                    Some(now),
+                )
+                .await?;
+                return Ok(());
+            }
         }
     }
 }

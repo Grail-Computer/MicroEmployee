@@ -86,12 +86,21 @@ async fn process_task(
             .await?
     };
 
-    let openai_api_key = load_openai_api_key(state).await?;
+    let openai_api_key = load_openai_api_key_opt(state).await?;
+    if openai_api_key.is_none() {
+        let codex_home = state.config.effective_codex_home();
+        let auth_summary = crate::codex_login::read_auth_summary(&codex_home).await?;
+        if !auth_summary.file_present {
+            anyhow::bail!(
+                "OpenAI auth not configured. Set OPENAI_API_KEY (env), store it in /admin/settings, or log in via /admin/auth."
+            );
+        }
+    }
 
     let allow_slack_mcp = settings.allow_slack_mcp && state.config.slack_bot_token.is_some();
     codex
         .ensure_started(
-            &openai_api_key,
+            openai_api_key.as_deref(),
             if allow_slack_mcp {
                 state.config.slack_bot_token.as_deref()
             } else {
@@ -192,22 +201,23 @@ async fn process_task(
     Ok(slack_reply)
 }
 
-async fn load_openai_api_key(state: &AppState) -> anyhow::Result<String> {
+async fn load_openai_api_key_opt(state: &AppState) -> anyhow::Result<Option<String>> {
     if let Ok(v) = std::env::var("OPENAI_API_KEY") {
-        if !v.trim().is_empty() {
-            return Ok(v);
+        let v = v.trim().to_string();
+        if !v.is_empty() {
+            return Ok(Some(v));
         }
     }
 
     let Some(crypto) = state.crypto.as_deref() else {
-        anyhow::bail!("OPENAI_API_KEY is not set and GRAIL_MASTER_KEY is missing/invalid");
+        return Ok(None);
     };
     let Some((nonce, ciphertext)) = db::read_secret(&state.pool, "openai_api_key").await? else {
-        anyhow::bail!("OpenAI API key not configured. Set OPENAI_API_KEY or configure it in /admin/settings.");
+        return Ok(None);
     };
     let plaintext = crypto.decrypt(b"openai_api_key", &nonce, &ciphertext)?;
     let s = String::from_utf8(plaintext).context("OPENAI_API_KEY not valid utf-8")?;
-    Ok(s)
+    Ok(Some(s))
 }
 
 fn conversation_key_for_task(task: &crate::models::Task) -> String {

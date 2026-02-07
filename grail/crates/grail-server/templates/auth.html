@@ -1,0 +1,81 @@
+{% extends "layout.html" %}
+{% block title %}Grail | Auth{% endblock %}
+{% block content %}
+  <h2 style="margin:0 0 10px 0; font-weight:700;">Auth</h2>
+
+  <div class="grid" style="margin-bottom: 14px;">
+    <div class="kv">
+      <div class="k">OPENAI_API_KEY</div>
+      <div class="v">
+        {% if openai_api_key_set %}
+          <span class="pill ok">set</span>
+        {% else %}
+          <span class="pill bad">missing</span>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="kv">
+      <div class="k">CODEX_HOME/auth.json</div>
+      <div class="v">
+        {% if codex_auth_file_set %}
+          <span class="pill ok">present</span>
+        {% else %}
+          <span class="pill bad">missing</span>
+        {% endif %}
+        {% if codex_auth_mode != "" %}
+          <span class="pill">{{ codex_auth_mode }}</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <h3 style="margin:18px 0 10px 0;">ChatGPT Device Login (Codex)</h3>
+
+  <p style="margin: 0 0 10px 0; color: var(--muted);">
+    If you don't want to use an API key, you can log in with ChatGPT via a device code flow.
+    This writes tokens to <span class="pill">/data/codex/auth.json</span> (persistent volume).
+  </p>
+
+  {% if device_login.is_some() %}
+    {% let dl = device_login.as_ref().unwrap() %}
+    <div class="kv" style="margin-bottom: 12px;">
+      <div class="k">Latest device login</div>
+      <div class="v">
+        <span class="pill">{{ dl.status }}</span>
+        <span class="pill">created_at={{ dl.created_at }}</span>
+      </div>
+      {% if dl.status == "pending" %}
+        <div style="margin-top: 10px; color: var(--muted);">
+          <div style="margin-bottom: 6px;">1) Open:</div>
+          <div><a href="{{ dl.verification_url }}" target="_blank" rel="noreferrer">{{ dl.verification_url }}</a></div>
+          <div style="margin: 10px 0 6px 0;">2) Enter code (expires in ~15 minutes):</div>
+          <div class="pill" style="font-size: 16px; color: var(--text);">{{ dl.user_code }}</div>
+          <div style="margin-top: 10px;">This page will update when the login completes. Refresh if needed.</div>
+        </div>
+
+        <form method="post" action="/admin/auth/device/cancel">
+          <button type="submit" style="border-color: rgba(255,107,107,0.35); background: rgba(255,107,107,0.10); color: rgba(255,107,107,0.95);">
+            Cancel Pending Login
+          </button>
+        </form>
+      {% endif %}
+
+      {% if dl.status == "failed" && dl.error_text != "" %}
+        <div style="margin-top: 10px; color: rgba(255,107,107,0.95);">
+          Error: {{ dl.error_text }}
+        </div>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  <form method="post" action="/admin/auth/device/start">
+    <button type="submit">Start Device Login</button>
+  </form>
+
+  <form method="post" action="/admin/auth/logout">
+    <button type="submit" style="border-color: rgba(255,107,107,0.35); background: rgba(255,107,107,0.10); color: rgba(255,107,107,0.95);">
+      Logout (Delete auth.json)
+    </button>
+  </form>
+{% endblock %}

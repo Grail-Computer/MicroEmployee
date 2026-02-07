@@ -4,7 +4,7 @@ use anyhow::Context;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 
-use crate::models::{PermissionsMode, Session, Settings, Task};
+use crate::models::{CodexDeviceLogin, PermissionsMode, Session, Settings, Task};
 
 pub async fn init_sqlite(db_path: &Path) -> anyhow::Result<SqlitePool> {
     let options = SqliteConnectOptions::new()
@@ -280,6 +280,157 @@ pub async fn reset_running_tasks(pool: &SqlitePool) -> anyhow::Result<u64> {
     .await
     .context("reset running tasks")?;
     Ok(res.rows_affected())
+}
+
+pub async fn cancel_pending_codex_device_logins(pool: &SqlitePool) -> anyhow::Result<u64> {
+    let res = sqlx::query(
+        r#"
+        UPDATE codex_device_logins
+        SET status = 'cancelled',
+            completed_at = unixepoch()
+        WHERE status = 'pending'
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("cancel pending codex device logins")?;
+    Ok(res.rows_affected())
+}
+
+pub async fn insert_codex_device_login(
+    pool: &SqlitePool,
+    login: &CodexDeviceLogin,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO codex_device_logins (
+          id,
+          status,
+          verification_url,
+          user_code,
+          device_auth_id,
+          interval_sec,
+          error_text,
+          created_at,
+          completed_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(&login.id)
+    .bind(&login.status)
+    .bind(&login.verification_url)
+    .bind(&login.user_code)
+    .bind(&login.device_auth_id)
+    .bind(login.interval_sec)
+    .bind(login.error_text.as_deref())
+    .bind(login.created_at)
+    .bind(login.completed_at)
+    .execute(pool)
+    .await
+    .context("insert codex device login")?;
+    Ok(())
+}
+
+pub async fn get_codex_device_login(
+    pool: &SqlitePool,
+    id: &str,
+) -> anyhow::Result<Option<CodexDeviceLogin>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+          id,
+          status,
+          verification_url,
+          user_code,
+          device_auth_id,
+          interval_sec,
+          error_text,
+          created_at,
+          completed_at
+        FROM codex_device_logins
+        WHERE id = ?1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .context("select codex device login")?;
+
+    Ok(row.map(|r| CodexDeviceLogin {
+        id: r.get::<String, _>("id"),
+        status: r.get::<String, _>("status"),
+        verification_url: r.get::<String, _>("verification_url"),
+        user_code: r.get::<String, _>("user_code"),
+        device_auth_id: r.get::<String, _>("device_auth_id"),
+        interval_sec: r.get::<i64, _>("interval_sec"),
+        error_text: r.get::<Option<String>, _>("error_text"),
+        created_at: r.get::<i64, _>("created_at"),
+        completed_at: r.get::<Option<i64>, _>("completed_at"),
+    }))
+}
+
+pub async fn get_latest_codex_device_login(
+    pool: &SqlitePool,
+) -> anyhow::Result<Option<CodexDeviceLogin>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+          id,
+          status,
+          verification_url,
+          user_code,
+          device_auth_id,
+          interval_sec,
+          error_text,
+          created_at,
+          completed_at
+        FROM codex_device_logins
+        ORDER BY created_at DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await
+    .context("select latest codex device login")?;
+
+    Ok(row.map(|r| CodexDeviceLogin {
+        id: r.get::<String, _>("id"),
+        status: r.get::<String, _>("status"),
+        verification_url: r.get::<String, _>("verification_url"),
+        user_code: r.get::<String, _>("user_code"),
+        device_auth_id: r.get::<String, _>("device_auth_id"),
+        interval_sec: r.get::<i64, _>("interval_sec"),
+        error_text: r.get::<Option<String>, _>("error_text"),
+        created_at: r.get::<i64, _>("created_at"),
+        completed_at: r.get::<Option<i64>, _>("completed_at"),
+    }))
+}
+
+pub async fn update_codex_device_login_status(
+    pool: &SqlitePool,
+    id: &str,
+    status: &str,
+    error_text: Option<&str>,
+    completed_at: Option<i64>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE codex_device_logins
+        SET status = ?2,
+            error_text = ?3,
+            completed_at = ?4
+        WHERE id = ?1
+        "#,
+    )
+    .bind(id)
+    .bind(status)
+    .bind(error_text)
+    .bind(completed_at)
+    .execute(pool)
+    .await
+    .context("update codex device login status")?;
+    Ok(())
 }
 
 pub async fn complete_task_success(

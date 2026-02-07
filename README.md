@@ -59,6 +59,8 @@ This template is intentionally “single workspace per deployment”.
 
 If `GRAIL_MASTER_KEY` is set, you can also store `OPENAI_API_KEY` encrypted in SQLite from the dashboard.
 
+`/admin/auth` lets you optionally log in with ChatGPT via a device code flow (writes tokens to `/data/codex/auth.json`). This is useful if you don't want to provide an API key.
+
 ## Persistence Layout
 
 Mount a volume at `/data`.
