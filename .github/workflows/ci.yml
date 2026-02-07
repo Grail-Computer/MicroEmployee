@@ -20,6 +20,9 @@ jobs:
       - name: Cargo test
         working-directory: grail
         run: cargo test
+      - name: Cargo fmt
+        working-directory: grail
+        run: cargo fmt --check
 
   docker:
     runs-on: ubuntu-latest
