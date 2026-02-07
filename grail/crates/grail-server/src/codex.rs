@@ -621,11 +621,20 @@ fn decide_command_approval(settings: &Settings, params: &serde_json::Value, cwd:
     }
 
     // Require commands to run under our configured cwd (avoid touching app code).
-    let cmd_cwd = params
-        .get("cwd")
-        .and_then(|v| v.as_str())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| cwd.to_path_buf());
+    // Be strict: reject any cwd that contains `..` to avoid path traversal via lexical paths.
+    let raw = params.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+    let mut cmd_cwd = if raw.trim().is_empty() {
+        cwd.to_path_buf()
+    } else {
+        PathBuf::from(raw.trim())
+    };
+    if !cmd_cwd.is_absolute() {
+        cmd_cwd = cwd.join(cmd_cwd);
+    }
+
+    let Some(cmd_cwd) = clean_path_no_parent(&cmd_cwd) else {
+        return "decline";
+    };
 
     if !cmd_cwd.starts_with(cwd) {
         return "decline";
@@ -633,6 +642,22 @@ fn decide_command_approval(settings: &Settings, params: &serde_json::Value, cwd:
 
     // NOTE: We rely on sandboxPolicy.networkAccess for network gating.
     "accept"
+}
+
+fn clean_path_no_parent(p: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::Prefix(pre) => out.push(pre.as_os_str()),
+            Component::RootDir => out.push(c.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => return None,
+            Component::Normal(seg) => out.push(seg),
+        }
+    }
+    Some(out)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
