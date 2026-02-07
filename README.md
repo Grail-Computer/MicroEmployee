@@ -62,6 +62,8 @@ If `GRAIL_MASTER_KEY` is set, you can also store `OPENAI_API_KEY` encrypted in S
 
 `/admin/auth` lets you optionally log in with ChatGPT via a device code flow (writes tokens to `/data/codex/auth.json`). This is useful if you don't want to provide an API key.
 
+`/admin/tasks` shows the queue, and lets you cancel queued tasks and retry failed tasks.
+
 ## Persistence Layout
 
 Mount a volume at `/data`.

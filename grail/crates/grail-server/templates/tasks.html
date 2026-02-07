@@ -12,6 +12,7 @@
         <th>Prompt</th>
         <th>Result / Error</th>
         <th>Created</th>
+        <th>Actions</th>
       </tr>
     </thead>
     <tbody>
@@ -31,6 +32,23 @@
             {% endif %}
           </td>
           <td style="color: var(--muted);">{{ t.created_at }}</td>
+          <td>
+            {% if t.status == "queued" %}
+              <form method="post" action="/admin/tasks/{{ t.id }}/cancel">
+                <button type="submit" style="margin-top:0; padding:6px 10px; font-size:12px; border-color: rgba(255,107,107,0.35); background: rgba(255,107,107,0.10); color: rgba(255,107,107,0.95);">
+                  Cancel
+                </button>
+              </form>
+            {% endif %}
+
+            {% if t.status == "failed" || t.status == "cancelled" %}
+              <form method="post" action="/admin/tasks/{{ t.id }}/retry">
+                <button type="submit" style="margin-top:8px; padding:6px 10px; font-size:12px;">
+                  Retry
+                </button>
+              </form>
+            {% endif %}
+          </td>
         </tr>
       {% endfor %}
     </tbody>

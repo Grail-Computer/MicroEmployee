@@ -13,6 +13,7 @@ pub struct StatusTemplate {
     pub queue_depth: i64,
     pub permissions_mode: String,
     pub slack_events_url: String,
+    pub worker_lock_owner: String,
 }
 
 #[derive(Template)]

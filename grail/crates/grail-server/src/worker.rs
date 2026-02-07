@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -10,56 +12,113 @@ use crate::models::Session;
 use crate::AppState;
 
 pub async fn worker_loop(state: AppState) {
+    const LEASE_SECONDS: i64 = 60;
+    const RENEW_EVERY_SECONDS: u64 = 20;
+
+    let worker_id = random_id("worker");
     let mut codex = CodexManager::new(state.config.clone());
 
-    match db::reset_running_tasks(&state.pool).await {
-        Ok(n) if n > 0 => {
-            warn!(count = n, "re-queued tasks left in running state after restart");
-        }
-        Ok(_) => {}
-        Err(err) => {
-            warn!(error = %err, "failed to reset running tasks on startup");
-        }
-    }
-
     loop {
-        match db::claim_next_task(&state.pool).await {
-            Ok(Some(task)) => {
-                let task_id = task.id;
-                let result = process_task(&state, &mut codex, &task).await;
-                match result {
-                    Ok(text) => {
-                        if let Err(err) = db::complete_task_success(&state.pool, task_id, &text).await
-                        {
-                            warn!(error = %err, task_id, "failed to mark task succeeded");
-                        }
+        // Acquire the worker lock so only one instance processes tasks at a time.
+        loop {
+            match db::try_acquire_or_renew_worker_lock(&state.pool, &worker_id, LEASE_SECONDS).await
+            {
+                Ok(true) => {
+                    info!(%worker_id, "acquired worker lock");
+                    break;
+                }
+                Ok(false) => {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+                Err(err) => {
+                    warn!(error = %err, "failed to acquire worker lock");
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            }
+        }
+
+        match db::reset_running_tasks(&state.pool).await {
+            Ok(n) if n > 0 => {
+                warn!(count = n, "re-queued tasks left in running state after worker restart");
+            }
+            Ok(_) => {}
+            Err(err) => {
+                warn!(error = %err, "failed to reset running tasks after acquiring lock");
+            }
+        }
+
+        let has_lock = Arc::new(AtomicBool::new(true));
+        let has_lock2 = has_lock.clone();
+        let pool = state.pool.clone();
+        let worker_id2 = worker_id.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(RENEW_EVERY_SECONDS)).await;
+                match db::try_acquire_or_renew_worker_lock(&pool, &worker_id2, LEASE_SECONDS).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        warn!(%worker_id2, "lost worker lock");
+                        has_lock2.store(false, Ordering::SeqCst);
+                        break;
                     }
                     Err(err) => {
-                        let msg = format!("{err:#}");
-                        warn!(error = %msg, task_id, "task failed");
-                        let _ = db::complete_task_failure(&state.pool, task_id, &msg).await;
-
-                        if let Some(slack) = state.slack.as_ref() {
-                            let user_msg = format!(
-                                "Task #{task_id} failed. Check /admin/tasks for details.\n\nError: {short}",
-                                short = shorten_error(&msg)
-                            );
-                            let _ = slack
-                                .post_message(&task.channel_id, &task.thread_ts, &user_msg)
-                                .await;
-                        }
+                        warn!(error = %err, %worker_id2, "failed to renew worker lock");
                     }
                 }
             }
-            Ok(None) => {
-                tokio::time::sleep(Duration::from_millis(750)).await;
-            }
-            Err(err) => {
-                warn!(error = %err, "worker loop db error");
-                tokio::time::sleep(Duration::from_secs(2)).await;
+        });
+
+        while has_lock.load(Ordering::SeqCst) {
+            match db::claim_next_task(&state.pool).await {
+                Ok(Some(task)) => {
+                    let task_id = task.id;
+                    let result = process_task(&state, &mut codex, &task).await;
+                    match result {
+                        Ok(text) => {
+                            if let Err(err) =
+                                db::complete_task_success(&state.pool, task_id, &text).await
+                            {
+                                warn!(error = %err, task_id, "failed to mark task succeeded");
+                            }
+                        }
+                        Err(err) => {
+                            let msg = format!("{err:#}");
+                            warn!(error = %msg, task_id, "task failed");
+                            let _ = db::complete_task_failure(&state.pool, task_id, &msg).await;
+
+                            if let Some(slack) = state.slack.as_ref() {
+                                let user_msg = format!(
+                                    "Task #{task_id} failed. Check /admin/tasks for details.\n\nError: {short}",
+                                    short = shorten_error(&msg)
+                                );
+                                let _ = slack
+                                    .post_message(&task.channel_id, &task.thread_ts, &user_msg)
+                                    .await;
+                            }
+                        }
+                    }
+                }
+                Ok(None) => {
+                    tokio::time::sleep(Duration::from_millis(750)).await;
+                }
+                Err(err) => {
+                    warn!(error = %err, "worker loop db error");
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
             }
         }
+
+        // Lock was lost; stop Codex to avoid two workers running at once.
+        codex.stop().await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
+}
+
+fn random_id(prefix: &str) -> String {
+    let mut bytes = [0u8; 16];
+    let mut rng = rand::rng();
+    rand::RngCore::fill_bytes(&mut rng, &mut bytes);
+    format!("{}_{}", prefix, hex::encode(bytes))
 }
 
 async fn process_task(
@@ -390,6 +449,10 @@ fn sanitize_rel_path(path: &str) -> anyhow::Result<std::path::PathBuf> {
             std::path::Component::Normal(_) => {}
             _ => anyhow::bail!("invalid path component in {}", path),
         }
+    }
+    // Treat AGENTS.md as immutable "constitution" unless an admin edits it manually.
+    if p.file_name().and_then(|n| n.to_str()) == Some("AGENTS.md") {
+        anyhow::bail!("AGENTS.md edits are not allowed via context_writes");
     }
     Ok(p)
 }

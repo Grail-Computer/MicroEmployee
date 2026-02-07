@@ -15,7 +15,7 @@ use std::time::Duration;
 use anyhow::Context;
 use askama::Template;
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Form, State};
+use axum::extract::{DefaultBodyLimit, Form, Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware;
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -125,6 +125,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/secrets/openai", post(admin_set_openai_api_key))
         .route("/secrets/openai/delete", post(admin_delete_openai_api_key))
         .route("/tasks", get(admin_tasks))
+        .route("/tasks/:id/cancel", post(admin_task_cancel))
+        .route("/tasks/:id/retry", post(admin_task_retry))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             admin_basic_auth,
@@ -362,6 +364,10 @@ async fn admin_status(State(state): State<AppState>) -> AppResult<Html<String>> 
         .await?
         .get::<i64, _>("c");
 
+    let worker_lock_owner = db::get_worker_lock_owner(&state.pool)
+        .await?
+        .unwrap_or_else(|| "(none)".to_string());
+
     let slack_events_url = state
         .config
         .base_url
@@ -378,6 +384,7 @@ async fn admin_status(State(state): State<AppState>) -> AppResult<Html<String>> 
         queue_depth,
         permissions_mode: settings.permissions_mode.as_db_str().to_string(),
         slack_events_url,
+        worker_lock_owner,
     };
     Ok(Html(tpl.render()?))
 }
@@ -497,6 +504,16 @@ async fn admin_tasks(State(state): State<AppState>) -> AppResult<Html<String>> {
         tasks: tasks.into_iter().map(Into::into).collect(),
     };
     Ok(Html(tpl.render()?))
+}
+
+async fn admin_task_cancel(State(state): State<AppState>, Path(id): Path<i64>) -> AppResult<Redirect> {
+    let _ = db::cancel_task(&state.pool, id).await?;
+    Ok(Redirect::to("/admin/tasks"))
+}
+
+async fn admin_task_retry(State(state): State<AppState>, Path(id): Path<i64>) -> AppResult<Redirect> {
+    let _ = db::retry_task(&state.pool, id).await?;
+    Ok(Redirect::to("/admin/tasks"))
 }
 
 async fn admin_auth_get(State(state): State<AppState>) -> AppResult<Html<String>> {

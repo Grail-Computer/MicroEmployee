@@ -282,6 +282,52 @@ pub async fn reset_running_tasks(pool: &SqlitePool) -> anyhow::Result<u64> {
     Ok(res.rows_affected())
 }
 
+pub async fn try_acquire_or_renew_worker_lock(
+    pool: &SqlitePool,
+    owner_id: &str,
+    lease_seconds: i64,
+) -> anyhow::Result<bool> {
+    anyhow::ensure!(lease_seconds >= 10, "lease_seconds too small");
+
+    let res = sqlx::query(
+        r#"
+        UPDATE worker_lock
+        SET owner_id = ?1,
+            lease_until = unixepoch() + ?2,
+            updated_at = unixepoch()
+        WHERE id = 1
+          AND (owner_id = ?1 OR lease_until < unixepoch())
+        "#,
+    )
+    .bind(owner_id)
+    .bind(lease_seconds)
+    .execute(pool)
+    .await
+    .context("acquire worker lock")?;
+
+    Ok(res.rows_affected() == 1)
+}
+
+pub async fn get_worker_lock_owner(pool: &SqlitePool) -> anyhow::Result<Option<String>> {
+    let row = sqlx::query(
+        r#"
+        SELECT owner_id, lease_until
+        FROM worker_lock
+        WHERE id = 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await
+    .context("get worker lock")?;
+
+    let Some(row) = row else { return Ok(None) };
+    let lease_until = row.get::<i64, _>("lease_until");
+    if lease_until <= chrono::Utc::now().timestamp() {
+        return Ok(None);
+    }
+    Ok(row.get::<Option<String>, _>("owner_id"))
+}
+
 pub async fn cancel_pending_codex_device_logins(pool: &SqlitePool) -> anyhow::Result<u64> {
     let res = sqlx::query(
         r#"
@@ -475,6 +521,45 @@ pub async fn complete_task_failure(
     .await
     .context("complete task failure")?;
     Ok(())
+}
+
+pub async fn cancel_task(pool: &SqlitePool, task_id: i64) -> anyhow::Result<bool> {
+    let res = sqlx::query(
+        r#"
+        UPDATE tasks
+        SET status = 'cancelled',
+            error_text = 'cancelled by admin',
+            started_at = NULL,
+            finished_at = unixepoch()
+        WHERE id = ?1
+          AND status = 'queued'
+        "#,
+    )
+    .bind(task_id)
+    .execute(pool)
+    .await
+    .context("cancel task")?;
+    Ok(res.rows_affected() == 1)
+}
+
+pub async fn retry_task(pool: &SqlitePool, task_id: i64) -> anyhow::Result<bool> {
+    let res = sqlx::query(
+        r#"
+        UPDATE tasks
+        SET status = 'queued',
+            result_text = NULL,
+            error_text = NULL,
+            started_at = NULL,
+            finished_at = NULL
+        WHERE id = ?1
+          AND status IN ('failed', 'cancelled')
+        "#,
+    )
+    .bind(task_id)
+    .execute(pool)
+    .await
+    .context("retry task")?;
+    Ok(res.rows_affected() == 1)
 }
 
 pub async fn list_recent_tasks(pool: &SqlitePool, limit: i64) -> anyhow::Result<Vec<Task>> {
