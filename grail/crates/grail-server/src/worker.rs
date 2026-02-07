@@ -559,6 +559,11 @@ async fn process_task(
         allow_web_mcp,
     );
 
+    // NOTE: Codex forwards this schema to the OpenAI "structured outputs" backend.
+    // That backend requires that for every object schema:
+    // - `required` is present
+    // - `required` contains *every* key in `properties`
+    // Optional fields must be represented as nullable (e.g., `anyOf: [{...}, {type:null}]`).
     let output_schema = serde_json::json!({
         "type": "object",
         "properties": {
@@ -582,15 +587,42 @@ async fn process_task(
                     "type": "object",
                     "properties": {
                         "name": { "type": "string" },
-                        "mode": { "type": "string", "enum": ["agent", "message"], "default": "agent" },
+                        "mode": {
+                            "anyOf": [
+                                { "type": "string", "enum": ["agent", "message"] },
+                                { "type": "null" }
+                            ],
+                            "default": "agent"
+                        },
                         "schedule_kind": { "type": "string", "enum": ["every", "cron", "at"] },
-                        "every_seconds": { "type": "integer", "minimum": 1 },
-                        "cron_expr": { "type": "string" },
-                        "at_ts": { "type": "integer" },
-                        "thread_ts": { "type": "string", "description": "Optional override. Empty string means post in channel (no thread)." },
+                        "every_seconds": {
+                            "anyOf": [
+                                { "type": "integer", "minimum": 1 },
+                                { "type": "null" }
+                            ]
+                        },
+                        "cron_expr": {
+                            "anyOf": [
+                                { "type": "string" },
+                                { "type": "null" }
+                            ]
+                        },
+                        "at_ts": {
+                            "anyOf": [
+                                { "type": "integer" },
+                                { "type": "null" }
+                            ]
+                        },
+                        "thread_ts": {
+                            "anyOf": [
+                                { "type": "string" },
+                                { "type": "null" }
+                            ],
+                            "description": "Optional override. null => use current thread. Empty string => post in channel (no thread)."
+                        },
                         "prompt_text": { "type": "string" }
                     },
-                    "required": ["name", "schedule_kind", "prompt_text"],
+                    "required": ["name", "mode", "schedule_kind", "every_seconds", "cron_expr", "at_ts", "thread_ts", "prompt_text"],
                     "additionalProperties": false
                 },
                 "default": []
@@ -605,16 +637,28 @@ async fn process_task(
                         "pattern_kind": { "type": "string", "enum": ["regex", "exact", "substring"] },
                         "pattern": { "type": "string" },
                         "action": { "type": "string", "enum": ["allow", "require_approval", "deny"] },
-                        "priority": { "type": "integer", "default": 100 },
-                        "enabled": { "type": "boolean", "default": true }
+                        "priority": {
+                            "anyOf": [
+                                { "type": "integer" },
+                                { "type": "null" }
+                            ],
+                            "default": 100
+                        },
+                        "enabled": {
+                            "anyOf": [
+                                { "type": "boolean" },
+                                { "type": "null" }
+                            ],
+                            "default": true
+                        }
                     },
-                    "required": ["name", "kind", "pattern_kind", "pattern", "action"],
+                    "required": ["name", "kind", "pattern_kind", "pattern", "action", "priority", "enabled"],
                     "additionalProperties": false
                 },
                 "default": []
             }
         },
-        "required": ["reply", "updated_memory_summary", "context_writes"],
+        "required": ["reply", "updated_memory_summary", "context_writes", "cron_jobs", "guardrail_rules"],
         "additionalProperties": false
     });
 
@@ -902,7 +946,11 @@ fn build_turn_input(
     s.push_str("  - every: set every_seconds\n");
     s.push_str("  - cron: set cron_expr (5-field like \"0 9 * * *\" is OK)\n");
     s.push_str("  - at: set at_ts (unix seconds)\n");
-    s.push_str("- Leave thread_ts empty string to post in the channel (not a thread); otherwise omit thread_ts to use the current thread.\n\n");
+    s.push_str("- IMPORTANT: the JSON schema is strict and requires all keys to be present.\n");
+    s.push_str("  - If a field is not applicable, set it to null.\n");
+    s.push_str("  - For thread_ts:\n");
+    s.push_str("    - null => use the current thread\n");
+    s.push_str("    - \"\" (empty string) => post in the channel (no thread)\n\n");
 
     s.push_str("Guardrails:\n");
     s.push_str("- If the user is onboarding you or setting boundaries, propose guardrail rules via `guardrail_rules`.\n");
