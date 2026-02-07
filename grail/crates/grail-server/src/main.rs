@@ -159,7 +159,9 @@ async fn admin_basic_auth(
             if !csrf_ok(&req) {
                 return (StatusCode::FORBIDDEN, "forbidden").into_response();
             }
-            next.run(req).await
+            let mut resp = next.run(req).await;
+            set_admin_security_headers(resp.headers_mut());
+            resp
         }
         Ok(false) => unauthorized_basic(),
         Err(err) => {
@@ -238,6 +240,37 @@ fn csrf_ok(req: &axum::http::Request<axum::body::Body>) -> bool {
     // some browsers may omit Origin in edge cases; requiring at least one keeps CSRF protection
     // meaningful for state-changing admin routes.
     false
+}
+
+fn set_admin_security_headers(headers: &mut HeaderMap) {
+    use axum::http::header::{CACHE_CONTROL, PRAGMA};
+
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
+    headers.insert(
+        axum::http::header::HeaderName::from_static("x-frame-options"),
+        HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        axum::http::header::HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        axum::http::header::HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        axum::http::header::HeaderName::from_static("x-robots-tag"),
+        HeaderValue::from_static("noindex, nofollow, nosnippet"),
+    );
+
+    // Tight CSP: no scripts, allow inline styles for server-rendered templates.
+    headers.insert(
+        axum::http::header::HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_static(
+            "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+        ),
+    );
 }
 
 fn host_from_url(s: &str) -> Option<&str> {
