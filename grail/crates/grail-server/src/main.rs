@@ -143,8 +143,8 @@ async fn main() -> anyhow::Result<()> {
             post(admin_delete_slack_bot_token),
         )
         .route("/tasks", get(admin_tasks))
-        .route("/tasks/:id/cancel", post(admin_task_cancel))
-        .route("/tasks/:id/retry", post(admin_task_retry))
+        .route("/tasks/{id}/cancel", post(admin_task_cancel))
+        .route("/tasks/{id}/retry", post(admin_task_retry))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             admin_basic_auth,
