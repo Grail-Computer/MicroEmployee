@@ -606,6 +606,63 @@ async fn process_task(
             apply_context_writes(&cwd, &parsed.context_writes).await?;
         }
 
+        // --- Auto-upload files to Slack ---
+        // Upload context_writes + agent-requested upload_files to the originating thread.
+        if provider == "slack" {
+            if let Some(ref sl) = slack {
+                let thread = thread_opt(&task.thread_ts);
+
+                // Collect unique paths to upload.
+                let mut upload_paths: std::collections::HashSet<std::path::PathBuf> =
+                    std::collections::HashSet::new();
+
+                // context_writes paths (only if context writes were actually applied).
+                if settings.permissions_mode == crate::models::PermissionsMode::Full
+                    && settings.allow_context_writes
+                {
+                    for cw in &parsed.context_writes {
+                        let path = cwd.join(&cw.path);
+                        upload_paths.insert(path);
+                    }
+                }
+
+                // Agent-requested uploads.
+                for rel in &parsed.upload_files {
+                    let path = cwd.join(rel);
+                    upload_paths.insert(path);
+                }
+
+                for path in &upload_paths {
+                    if path.exists() {
+                        match tokio::fs::read(path).await {
+                            Ok(content) => {
+                                let filename = path
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| "file".to_string());
+                                if let Err(err) = sl
+                                    .upload_file_content(
+                                        &task.channel_id,
+                                        thread,
+                                        &filename,
+                                        &content,
+                                    )
+                                    .await
+                                {
+                                    warn!(error = %err, file = %filename, "failed to upload file to slack");
+                                }
+                            }
+                            Err(err) => {
+                                warn!(error = %err, path = %path.display(), "failed to read file for upload");
+                            }
+                        }
+                    } else {
+                        warn!(path = %path.display(), "upload_files path does not exist");
+                    }
+                }
+            }
+        }
+
         let (mem, redacted) = crate::secrets::redact_secrets(&parsed.updated_memory_summary);
         if redacted {
             warn!("redacted secrets from updated_memory_summary");
@@ -784,9 +841,14 @@ pub fn agent_output_schema() -> serde_json::Value {
                     "additionalProperties": false
                 },
                 "default": []
+            },
+            "upload_files": {
+                "type": "array",
+                "items": { "type": "string" },
+                "default": []
             }
         },
-        "required": ["reply", "updated_memory_summary", "context_writes", "cron_jobs", "guardrail_rules"],
+        "required": ["reply", "updated_memory_summary", "context_writes", "upload_files", "cron_jobs", "guardrail_rules"],
         "additionalProperties": false
     })
 }
@@ -835,6 +897,13 @@ fn format_slack_context(messages: &[crate::slack::SlackMessage]) -> String {
             .unwrap_or("unknown");
         let text = m.text.clone().unwrap_or_default().replace('\n', " ");
         out.push_str(&format!("{:02}. {} {}: {}\n", i + 1, m.ts, who, text));
+        // Show any file attachments in the context.
+        for f in &m.files {
+            let fname = f.name.as_deref().unwrap_or("unknown");
+            let mime = f.mimetype.as_deref().unwrap_or("");
+            out.push_str(&format!("    [file: {} ({})]", fname, mime));
+            out.push('\n');
+        }
     }
     out
 }
@@ -937,6 +1006,22 @@ fn build_turn_input(
     s.push_str(task.prompt_text.trim());
     s.push_str("\n\n");
 
+    // Include file attachment info if present.
+    if !task.files_json.is_empty() {
+        if let Ok(files) = serde_json::from_str::<Vec<serde_json::Value>>(&task.files_json) {
+            if !files.is_empty() {
+                s.push_str("Files attached to this message:\n");
+                for f in &files {
+                    let name = f["name"].as_str().unwrap_or("unknown");
+                    let mime = f["mimetype"].as_str().unwrap_or("");
+                    let path = f["local_path"].as_str().unwrap_or("(unavailable)");
+                    s.push_str(&format!("- {name} ({mime}) → {path}\n"));
+                }
+                s.push_str("\n");
+            }
+        }
+    }
+
     s.push_str("Durable knowledge:\n");
     s.push_str("- If you want to write durable notes/docs, return them via `context_writes` with a RELATIVE path under the context directory.\n");
     s.push_str("- When you create a new doc, also update `INDEX.md` with a single-line entry: `<label> - <relative/path.md>`.\n");
@@ -960,6 +1045,10 @@ fn build_turn_input(
     s.push_str("- If the user is onboarding you or setting boundaries, propose guardrail rules via `guardrail_rules`.\n");
     s.push_str("- Prefer tightening rules (require_approval/deny). Only propose allow rules when the user explicitly wants to loosen restrictions.\n\n");
 
+    s.push_str("File uploads:\n");
+    s.push_str("- Any files you create via `context_writes` will automatically be uploaded to this Slack thread.\n");
+    s.push_str("- You can also specify additional files to upload via `upload_files` (relative paths under the context directory).\n\n");
+
     s.push_str("Return ONLY a single JSON object matching the provided JSON schema.\n");
     s
 }
@@ -970,6 +1059,8 @@ struct AgentJson {
     updated_memory_summary: String,
     #[serde(default)]
     context_writes: Vec<ContextWrite>,
+    #[serde(default)]
+    upload_files: Vec<String>,
     #[serde(default)]
     cron_jobs: Vec<AgentCronJob>,
     #[serde(default)]

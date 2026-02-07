@@ -23,6 +23,10 @@ oauth_config:
       # Optional: required only if you enable the Slack MCP tool `list_channels`.
       - channels:read
       - groups:read
+      # Required for downloading files shared in messages.
+      - files:read
+      # Required for uploading files (context_writes, agent uploads) back to Slack.
+      - files:write
 
 settings:
   event_subscriptions:

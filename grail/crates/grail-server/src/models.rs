@@ -64,6 +64,7 @@ pub struct Task {
     pub event_ts: String,
     pub requested_by_user_id: String,
     pub prompt_text: String,
+    pub files_json: String,
     pub result_text: Option<String>,
     pub error_text: Option<String>,
     pub created_at: i64,

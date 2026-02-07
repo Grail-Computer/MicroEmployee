@@ -286,6 +286,167 @@ pub struct SlackMessage {
     pub user: Option<String>,
     pub bot_id: Option<String>,
     pub subtype: Option<String>,
+    #[serde(default)]
+    pub files: Vec<SlackFile>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SlackFile {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub mimetype: Option<String>,
+    #[serde(default)]
+    pub filetype: Option<String>,
+    #[serde(default)]
+    pub url_private_download: Option<String>,
+    #[serde(default)]
+    pub size: Option<u64>,
+}
+
+impl SlackClient {
+    /// Download a Slack-hosted file using the bot token for auth.
+    /// Returns the local path where the file was saved.
+    pub async fn download_file(&self, url: &str, dest: &std::path::Path) -> anyhow::Result<()> {
+        let resp = self
+            .http
+            .get(url)
+            .header(AUTHORIZATION, format!("Bearer {}", self.bot_token))
+            .send()
+            .await
+            .context("slack file download request")?;
+
+        if !resp.status().is_success() {
+            anyhow::bail!("slack file download failed with status {}", resp.status());
+        }
+
+        if let Some(parent) = dest.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .context("create download directory")?;
+        }
+
+        let bytes = resp.bytes().await.context("read file bytes")?;
+        tokio::fs::write(dest, &bytes)
+            .await
+            .context("write downloaded file")?;
+
+        Ok(())
+    }
+
+    /// Upload file content to a Slack channel/thread using files.uploadV2 flow:
+    /// 1. files.getUploadURLExternal
+    /// 2. PUT content to the upload URL
+    /// 3. files.completeUploadExternal to share in channel
+    pub async fn upload_file_content(
+        &self,
+        channel: &str,
+        thread_ts: Option<&str>,
+        filename: &str,
+        content: &[u8],
+    ) -> anyhow::Result<()> {
+        // Step 1: Get upload URL
+        #[derive(Deserialize)]
+        struct UploadUrlResp {
+            ok: bool,
+            error: Option<String>,
+            upload_url: Option<String>,
+            file_id: Option<String>,
+        }
+
+        let mut form_parts = vec![
+            ("filename", filename.to_string()),
+            ("length", content.len().to_string()),
+        ];
+        // Guess a title from the filename
+        form_parts.push(("title", filename.to_string()));
+
+        let resp: UploadUrlResp = self
+            .http
+            .get("https://slack.com/api/files.getUploadURLExternal")
+            .headers(self.headers())
+            .query(&form_parts)
+            .send()
+            .await
+            .context("files.getUploadURLExternal request")?
+            .json()
+            .await
+            .context("files.getUploadURLExternal decode")?;
+
+        if !resp.ok {
+            anyhow::bail!(
+                "files.getUploadURLExternal failed: {}",
+                resp.error.unwrap_or_else(|| "unknown_error".to_string())
+            );
+        }
+
+        let upload_url = resp
+            .upload_url
+            .context("files.getUploadURLExternal missing upload_url")?;
+        let file_id = resp
+            .file_id
+            .context("files.getUploadURLExternal missing file_id")?;
+
+        // Step 2: PUT content to the upload URL
+        let put_resp = self
+            .http
+            .post(&upload_url)
+            .body(content.to_vec())
+            .send()
+            .await
+            .context("file upload PUT request")?;
+
+        if !put_resp.status().is_success() {
+            anyhow::bail!("file upload PUT failed with status {}", put_resp.status());
+        }
+
+        // Step 3: Complete upload and share in channel
+        #[derive(Serialize)]
+        struct CompleteReq {
+            files: Vec<CompleteFile>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            channel_id: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            thread_ts: Option<String>,
+        }
+        #[derive(Serialize)]
+        struct CompleteFile {
+            id: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            title: Option<String>,
+        }
+
+        let complete_resp: SlackApiResponse<serde_json::Value> = self
+            .http
+            .post("https://slack.com/api/files.completeUploadExternal")
+            .headers(self.headers())
+            .json(&CompleteReq {
+                files: vec![CompleteFile {
+                    id: file_id,
+                    title: Some(filename.to_string()),
+                }],
+                channel_id: Some(channel.to_string()),
+                thread_ts: thread_ts.map(|s| s.to_string()),
+            })
+            .send()
+            .await
+            .context("files.completeUploadExternal request")?
+            .json()
+            .await
+            .context("files.completeUploadExternal decode")?;
+
+        if !complete_resp.ok {
+            anyhow::bail!(
+                "files.completeUploadExternal failed: {}",
+                complete_resp
+                    .error
+                    .unwrap_or_else(|| "unknown_error".to_string())
+            );
+        }
+
+        Ok(())
+    }
 }
 
 fn split_slack_text(text: &str, max_bytes: usize) -> Vec<String> {

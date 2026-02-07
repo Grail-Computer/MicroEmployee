@@ -1029,6 +1029,7 @@ async fn run_codex_self_test(state: &AppState) -> anyhow::Result<String> {
         event_ts: format!("{now}"),
         requested_by_user_id: "admin".to_string(),
         prompt_text: "diagnostic".to_string(),
+        files_json: String::new(),
         result_text: None,
         error_text: None,
         created_at: now,
@@ -1444,16 +1445,17 @@ async fn slack_events(
             event_id,
             event,
         } => {
-            let (user, text, ts, channel, thread_ts, is_dm) = match event {
+            let (user, text, ts, channel, thread_ts, is_dm, files) = match event {
                 SlackEvent::AppMention {
                     user,
                     text,
                     ts,
                     channel,
                     thread_ts,
+                    files,
                 } => {
                     let thread_ts = thread_ts.unwrap_or_else(|| ts.clone());
-                    (user, text, ts, channel, thread_ts, false)
+                    (user, text, ts, channel, thread_ts, false, files)
                 }
                 SlackEvent::Message {
                     user,
@@ -1463,6 +1465,7 @@ async fn slack_events(
                     channel_type,
                     subtype,
                     bot_id,
+                    files,
                     ..
                 } => {
                     // Only handle direct messages (IMs and multi-person IMs).
@@ -1479,11 +1482,9 @@ async fn slack_events(
                     let Some(user) = user else {
                         return (StatusCode::OK, "").into_response();
                     };
-                    let Some(text) = text else {
-                        return (StatusCode::OK, "").into_response();
-                    };
+                    let text = text.unwrap_or_default();
                     // In DMs, reply in-channel (no thread).
-                    (user, text, ts, channel, String::new(), true)
+                    (user, text, ts, channel, String::new(), true, files)
                 }
                 _ => return (StatusCode::OK, "").into_response(),
             };
@@ -1559,7 +1560,7 @@ async fn slack_events(
                 return (StatusCode::OK, "").into_response();
             }
 
-            let prompt = if is_dm {
+            let mut prompt = if is_dm {
                 clamp_chars(text.trim().to_string(), 4_000)
             } else {
                 clamp_chars(strip_leading_mentions(&text), 4_000)
@@ -1586,7 +1587,62 @@ async fn slack_events(
                 return (StatusCode::OK, "").into_response();
             }
 
-            let task_id = match db::enqueue_task(
+            // --- File handling ---
+            // Download any attached files and append info to the prompt.
+            let mut files_meta: Vec<serde_json::Value> = Vec::new();
+            if !files.is_empty() {
+                if let Ok(Some(token)) = crate::secrets::load_slack_bot_token_opt(&state).await {
+                    let slack_dl = SlackClient::new(state.http.clone(), token);
+                    let download_dir = state.config.data_dir.join("downloads").join(&ts);
+                    for f in &files {
+                        let fname = f.name.as_deref().unwrap_or("unknown");
+                        let mime = f.mimetype.as_deref().unwrap_or("application/octet-stream");
+                        if let Some(url) = f.url_private_download.as_deref() {
+                            let dest = download_dir.join(fname);
+                            match slack_dl.download_file(url, &dest).await {
+                                Ok(()) => {
+                                    let dest_str = dest.display().to_string();
+                                    if mime.starts_with("image/") {
+                                        prompt.push_str(&format!(
+                                            "\n[Attached image: {fname} — downloaded to {dest_str}]"
+                                        ));
+                                    } else {
+                                        prompt.push_str(&format!(
+                                            "\n[Attached file: {fname} ({mime}) — downloaded to {dest_str}]"
+                                        ));
+                                    }
+                                    files_meta.push(serde_json::json!({
+                                        "id": f.id,
+                                        "name": fname,
+                                        "mimetype": mime,
+                                        "filetype": f.filetype,
+                                        "size": f.size,
+                                        "local_path": dest_str,
+                                    }));
+                                }
+                                Err(err) => {
+                                    warn!(error = %err, file = fname, "failed to download slack file");
+                                    prompt.push_str(&format!(
+                                        "\n[Attached file: {fname} ({mime}) — download failed]"
+                                    ));
+                                }
+                            }
+                        } else {
+                            prompt.push_str(&format!(
+                                "\n[Attached file: {fname} ({mime}) — no download URL]"
+                            ));
+                        }
+                    }
+                }
+            }
+
+            let files_json = if files_meta.is_empty() {
+                String::new()
+            } else {
+                serde_json::to_string(&files_meta).unwrap_or_default()
+            };
+
+            let task_id = match db::enqueue_task_with_files(
                 &state.pool,
                 "slack",
                 &team_id,
@@ -1595,6 +1651,7 @@ async fn slack_events(
                 &ts,
                 &user,
                 &prompt,
+                &files_json,
             )
             .await
             {
@@ -2360,6 +2417,8 @@ enum SlackEvent {
         channel: String,
         #[serde(default)]
         thread_ts: Option<String>,
+        #[serde(default)]
+        files: Vec<crate::slack::SlackFile>,
     },
 
     #[serde(rename = "message")]
@@ -2378,6 +2437,8 @@ enum SlackEvent {
         subtype: Option<String>,
         #[serde(default)]
         bot_id: Option<String>,
+        #[serde(default)]
+        files: Vec<crate::slack::SlackFile>,
     },
 
     #[serde(other)]

@@ -1,0 +1,1 @@
+ALTER TABLE tasks ADD COLUMN files_json TEXT NOT NULL DEFAULT '';

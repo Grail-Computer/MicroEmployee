@@ -274,6 +274,31 @@ pub async fn enqueue_task(
     requested_by_user_id: &str,
     prompt_text: &str,
 ) -> anyhow::Result<i64> {
+    enqueue_task_with_files(
+        pool,
+        provider,
+        workspace_id,
+        channel_id,
+        thread_ts,
+        event_ts,
+        requested_by_user_id,
+        prompt_text,
+        "",
+    )
+    .await
+}
+
+pub async fn enqueue_task_with_files(
+    pool: &SqlitePool,
+    provider: &str,
+    workspace_id: &str,
+    channel_id: &str,
+    thread_ts: &str,
+    event_ts: &str,
+    requested_by_user_id: &str,
+    prompt_text: &str,
+    files_json: &str,
+) -> anyhow::Result<i64> {
     let res = sqlx::query(
         r#"
         INSERT INTO tasks (
@@ -285,9 +310,10 @@ pub async fn enqueue_task(
           event_ts,
           requested_by_user_id,
           prompt_text,
+          files_json,
           created_at
         )
-        VALUES (?1, 'queued', ?2, ?3, ?4, ?5, ?6, ?7, unixepoch())
+        VALUES (?1, 'queued', ?2, ?3, ?4, ?5, ?6, ?7, ?8, unixepoch())
         "#,
     )
     .bind(provider)
@@ -297,6 +323,7 @@ pub async fn enqueue_task(
     .bind(event_ts)
     .bind(requested_by_user_id)
     .bind(prompt_text)
+    .bind(files_json)
     .execute(pool)
     .await
     .context("insert task")?;
@@ -938,6 +965,7 @@ pub async fn claim_next_task(pool: &SqlitePool) -> anyhow::Result<Option<Task>> 
           event_ts,
           requested_by_user_id,
           prompt_text,
+          files_json,
           result_text,
           error_text,
           created_at,
@@ -992,6 +1020,7 @@ pub async fn claim_next_task(pool: &SqlitePool) -> anyhow::Result<Option<Task>> 
         event_ts: row.get::<String, _>("event_ts"),
         requested_by_user_id: row.get::<String, _>("requested_by_user_id"),
         prompt_text: row.get::<String, _>("prompt_text"),
+        files_json: row.get::<String, _>("files_json"),
         result_text: row.get::<Option<String>, _>("result_text"),
         error_text: row.get::<Option<String>, _>("error_text"),
         created_at: row.get::<i64, _>("created_at"),
@@ -1344,6 +1373,7 @@ pub async fn list_recent_tasks(pool: &SqlitePool, limit: i64) -> anyhow::Result<
           event_ts,
           requested_by_user_id,
           prompt_text,
+          files_json,
           result_text,
           error_text,
           created_at,
@@ -1373,6 +1403,7 @@ pub async fn list_recent_tasks(pool: &SqlitePool, limit: i64) -> anyhow::Result<
             event_ts: row.get::<String, _>("event_ts"),
             requested_by_user_id: row.get::<String, _>("requested_by_user_id"),
             prompt_text: row.get::<String, _>("prompt_text"),
+            files_json: row.get::<String, _>("files_json"),
             result_text: row.get::<Option<String>, _>("result_text"),
             error_text: row.get::<Option<String>, _>("error_text"),
             created_at: row.get::<i64, _>("created_at"),
