@@ -123,6 +123,15 @@ pub struct ContextEditTemplate {
 }
 
 #[derive(Template)]
+#[template(path = "context_view.html")]
+pub struct ContextViewTemplate {
+    pub active: &'static str,
+    pub path: String,
+    pub rendered_html: String,
+    pub bytes: String,
+}
+
+#[derive(Template)]
 #[template(path = "diagnostics.html")]
 pub struct DiagnosticsTemplate {
     pub active: &'static str,
@@ -205,6 +214,7 @@ pub struct ContextFileRow {
     pub path: String,
     pub bytes: String,
     pub edit_url: String,
+    pub view_url: String,
 }
 
 impl From<Task> for TaskRow {

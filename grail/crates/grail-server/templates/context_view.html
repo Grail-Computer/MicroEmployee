@@ -1,0 +1,130 @@
+{% extends "layout.html" %}
+{% block title %}Grail | {{ path }}{% endblock %}
+{% block content %}
+  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;">
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <a href="/admin/context" style="color: var(--text-secondary); text-decoration: none; font-size: 14px;">← Context</a>
+      <span style="color: var(--text-tertiary);">/</span>
+      <h2 style="margin: 0; font-size: 16px;">{{ path }}</h2>
+      <span class="text-muted" style="font-size: 12px; font-family: var(--mono);">{{ bytes }} B</span>
+    </div>
+    <a href="/admin/context/edit?path={{ path }}" class="btn btn-sm" style="text-decoration: none;">Edit</a>
+  </div>
+
+  <div class="viewer-body">
+    {{ rendered_html|safe }}
+  </div>
+
+  <style>
+    .viewer-body {
+      font-size: 14px;
+      line-height: 1.7;
+      color: var(--text);
+      padding: 24px;
+      background: var(--bg-raised);
+      border-radius: 10px;
+      border: 1px solid var(--border);
+    }
+
+    /* Markdown styles */
+    .viewer-body h1 {
+      font-size: 22px;
+      font-weight: 600;
+      margin: 28px 0 8px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--border);
+    }
+    .viewer-body h1:first-child { margin-top: 0; }
+    .viewer-body h2 {
+      font-size: 18px;
+      font-weight: 600;
+      margin: 24px 0 8px;
+      padding-bottom: 4px;
+      border-bottom: 1px solid var(--border);
+    }
+    .viewer-body h3 {
+      font-size: 15px;
+      font-weight: 600;
+      margin: 20px 0 6px;
+    }
+    .viewer-body h4, .viewer-body h5, .viewer-body h6 {
+      font-size: 14px;
+      font-weight: 600;
+      margin: 16px 0 4px;
+    }
+    .viewer-body p {
+      margin: 10px 0;
+    }
+    .viewer-body ul, .viewer-body ol {
+      margin: 8px 0;
+      padding-left: 24px;
+    }
+    .viewer-body li {
+      margin: 4px 0;
+    }
+    .viewer-body code {
+      font-family: var(--mono);
+      font-size: 12px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: var(--bg-hover);
+    }
+    .viewer-body pre {
+      margin: 12px 0;
+      padding: 16px;
+      border-radius: 8px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      overflow-x: auto;
+    }
+    .viewer-body pre code {
+      padding: 0;
+      background: none;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .viewer-body blockquote {
+      margin: 12px 0;
+      padding: 2px 16px;
+      border-left: 3px solid rgba(255,255,255,0.1);
+      color: var(--text-secondary);
+    }
+    .viewer-body table {
+      margin: 12px 0;
+    }
+    .viewer-body a {
+      color: var(--accent);
+    }
+    .viewer-body hr {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 20px 0;
+    }
+    .viewer-body img {
+      max-width: 100%;
+      border-radius: 8px;
+    }
+    .viewer-body strong {
+      font-weight: 600;
+    }
+
+    /* Code file view (non-markdown) */
+    .viewer-body .code-view {
+      margin: 0;
+      padding: 0;
+      background: none;
+      border: none;
+      border-radius: 0;
+    }
+    .viewer-body .code-view code {
+      padding: 0;
+      background: none;
+      font-family: var(--mono);
+      font-size: 13px;
+      line-height: 1.6;
+      white-space: pre;
+      display: block;
+      tab-size: 4;
+    }
+  </style>
+{% endblock %}

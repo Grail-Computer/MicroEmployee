@@ -199,6 +199,7 @@ async fn main() -> anyhow::Result<()> {
             "/context/edit",
             get(admin_context_edit_get).post(admin_context_edit_post),
         )
+        .route("/context/view", get(admin_context_view_get))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             admin_basic_auth,
@@ -938,6 +939,97 @@ async fn admin_context_edit_post(
         "/admin/context/edit?path={}",
         urlencoding::encode(&path)
     )))
+}
+
+async fn admin_context_view_get(
+    State(state): State<AppState>,
+    Query(q): Query<ContextEditQuery>,
+) -> AppResult<Html<String>> {
+    let path = q.path.unwrap_or_else(|| "INDEX.md".to_string());
+    let path = path.trim().to_string();
+    if path.is_empty() {
+        return Ok(Html(
+            crate::templates::ContextViewTemplate {
+                active: "context",
+                path: "INDEX.md".to_string(),
+                rendered_html: String::new(),
+                bytes: "0".to_string(),
+            }
+            .render()?,
+        ));
+    }
+
+    let context_dir = state.config.data_dir.join("context");
+    let context_dir = tokio::fs::canonicalize(&context_dir)
+        .await
+        .unwrap_or(context_dir);
+    let rel = sanitize_rel_path(&path)?;
+    let full = resolve_under_root_no_symlinks(&context_dir, &rel).await?;
+
+    let content = match tokio::fs::read_to_string(&full).await {
+        Ok(v) => v,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(anyhow::Error::new(err).context("read context file").into()),
+    };
+
+    let bytes = content.as_bytes().len().to_string();
+
+    // Detect if this is a markdown file
+    let is_markdown = path.ends_with(".md") || path.ends_with(".markdown");
+
+    let rendered_html = if is_markdown {
+        // Render markdown to HTML
+        let parser = pulldown_cmark::Parser::new(&content);
+        let mut html_output = String::new();
+        pulldown_cmark::html::push_html(&mut html_output, parser);
+        html_output
+    } else {
+        // Detect language for display
+        let lang = if path.ends_with(".py") {
+            "python"
+        } else if path.ends_with(".rs") {
+            "rust"
+        } else if path.ends_with(".toml") {
+            "toml"
+        } else if path.ends_with(".yaml") || path.ends_with(".yml") {
+            "yaml"
+        } else if path.ends_with(".json") {
+            "json"
+        } else if path.ends_with(".sh") || path.ends_with(".bash") {
+            "bash"
+        } else if path.ends_with(".sql") {
+            "sql"
+        } else if path.ends_with(".html") || path.ends_with(".htm") {
+            "html"
+        } else if path.ends_with(".css") {
+            "css"
+        } else if path.ends_with(".js") || path.ends_with(".ts") {
+            "javascript"
+        } else if path.contains("Dockerfile") {
+            "dockerfile"
+        } else if path.contains("Makefile") || path.ends_with(".mk") {
+            "makefile"
+        } else {
+            "text"
+        };
+        // Escape HTML entities and wrap in <pre><code>
+        let escaped = content
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;");
+        format!(
+            "<pre class=\"code-view\"><code data-lang=\"{}\">{}</code></pre>",
+            lang, escaped
+        )
+    };
+
+    let tpl = crate::templates::ContextViewTemplate {
+        active: "context",
+        path,
+        rendered_html,
+        bytes,
+    };
+    Ok(Html(tpl.render()?))
 }
 
 async fn admin_task_cancel(
@@ -2321,10 +2413,12 @@ async fn list_context_files(
                 .to_string_lossy()
                 .to_string();
             let edit_url = format!("/admin/context/edit?path={}", urlencoding::encode(&rel));
+            let view_url = format!("/admin/context/view?path={}", urlencoding::encode(&rel));
             out.push(crate::templates::ContextFileRow {
                 path: rel,
                 bytes: format!("{}", meta.len()),
                 edit_url,
+                view_url,
             });
         }
     }
