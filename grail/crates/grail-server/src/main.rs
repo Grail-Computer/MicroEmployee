@@ -155,7 +155,12 @@ async fn admin_basic_auth(
     next: middleware::Next,
 ) -> Response {
     match check_basic_auth(&state.config.admin_password, req.headers()) {
-        Ok(true) => next.run(req).await,
+        Ok(true) => {
+            if !csrf_ok(&req) {
+                return (StatusCode::FORBIDDEN, "forbidden").into_response();
+            }
+            next.run(req).await
+        }
         Ok(false) => unauthorized_basic(),
         Err(err) => {
             warn!(error = %err, "admin auth failed");
@@ -192,6 +197,129 @@ fn check_basic_auth(admin_password: &str, headers: &HeaderMap) -> anyhow::Result
         return Ok(false);
     }
     Ok(pass == admin_password)
+}
+
+fn csrf_ok(req: &axum::http::Request<axum::body::Body>) -> bool {
+    use axum::http::header::{HOST, ORIGIN, REFERER};
+
+    // GET is safe; forms and state-changing routes should include Origin/Referer.
+    if req.method() == axum::http::Method::GET || req.method() == axum::http::Method::HEAD {
+        return true;
+    }
+
+    let host = req
+        .headers()
+        .get(HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .trim();
+    if host.is_empty() {
+        // If we don't have a host, we can't do a reliable same-origin check.
+        return false;
+    }
+    let host = host.split(':').next().unwrap_or(host).to_ascii_lowercase();
+
+    // Prefer Origin, fall back to Referer.
+    if let Some(origin) = req.headers().get(ORIGIN).and_then(|v| v.to_str().ok()) {
+        if let Some(h) = host_from_url(origin) {
+            return h.eq_ignore_ascii_case(&host);
+        }
+        return false;
+    }
+
+    if let Some(referer) = req.headers().get(REFERER).and_then(|v| v.to_str().ok()) {
+        if let Some(h) = host_from_url(referer) {
+            return h.eq_ignore_ascii_case(&host);
+        }
+        return false;
+    }
+
+    // Reject requests without Origin/Referer. Attackers can deliberately suppress Referer, and
+    // some browsers may omit Origin in edge cases; requiring at least one keeps CSRF protection
+    // meaningful for state-changing admin routes.
+    false
+}
+
+fn host_from_url(s: &str) -> Option<&str> {
+    let s = s.trim();
+    let after_scheme = s.split("://").nth(1)?;
+    let host_port = after_scheme.split('/').next()?;
+    let host_port = host_port.split('@').last().unwrap_or(host_port);
+    Some(host_port.split(':').next().unwrap_or(host_port))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{header, Method, Request};
+
+    #[test]
+    fn csrf_allows_get_without_headers() {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/settings")
+            .body(axum::body::Body::from(""))
+            .unwrap();
+        assert!(csrf_ok(&req));
+    }
+
+    #[test]
+    fn csrf_rejects_post_without_origin_or_referer() {
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/settings")
+            .header(header::HOST, "example.com")
+            .body(axum::body::Body::from(""))
+            .unwrap();
+        assert!(!csrf_ok(&req));
+    }
+
+    #[test]
+    fn csrf_accepts_matching_origin() {
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/settings")
+            .header(header::HOST, "example.com")
+            .header(header::ORIGIN, "https://example.com")
+            .body(axum::body::Body::from(""))
+            .unwrap();
+        assert!(csrf_ok(&req));
+    }
+
+    #[test]
+    fn csrf_rejects_mismatching_origin() {
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/settings")
+            .header(header::HOST, "example.com")
+            .header(header::ORIGIN, "https://evil.com")
+            .body(axum::body::Body::from(""))
+            .unwrap();
+        assert!(!csrf_ok(&req));
+    }
+
+    #[test]
+    fn csrf_accepts_matching_referer_when_origin_missing() {
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/settings")
+            .header(header::HOST, "example.com")
+            .header(header::REFERER, "https://example.com/admin/settings")
+            .body(axum::body::Body::from(""))
+            .unwrap();
+        assert!(csrf_ok(&req));
+    }
+
+    #[test]
+    fn host_from_url_parses_host_without_port() {
+        assert_eq!(host_from_url("https://example.com"), Some("example.com"));
+        assert_eq!(host_from_url("https://example.com:123"), Some("example.com"));
+        assert_eq!(
+            host_from_url("https://user:pass@example.com:123/x/y"),
+            Some("example.com")
+        );
+        assert_eq!(host_from_url("null"), None);
+    }
 }
 
 async fn admin_status(State(state): State<AppState>) -> AppResult<Html<String>> {
