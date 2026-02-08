@@ -1751,7 +1751,8 @@ async fn slack_events(
                                 crate::secrets::load_slack_bot_token_opt(&state).await
                             {
                                 let slack = SlackClient::new(state.http.clone(), token);
-                                let msg = "Sorry, you're not authorized to use this Grail instance.";
+                                let msg =
+                                    "Sorry, you're not authorized to use this Grail instance.";
                                 let _ = slack
                                     .post_message(&channel, thread_opt(&thread_ts), msg)
                                     .await;
