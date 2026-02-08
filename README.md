@@ -163,3 +163,9 @@ export SLACK_BOT_TOKEN=...
 export OPENAI_API_KEY=...
 cargo run -p grail-server
 ```
+
+## Custom Development
+
+Need a tailored agent setup, custom integrations, or help deploying MicroEmployee for your team? We build custom AI infrastructure.
+
+Reach out: **yash@grail.computer**
