@@ -4,9 +4,7 @@ on:
   pull_request:
   push:
     branches:
-      - main
-      - master
-      - codex/**
+      - "**"
 
 jobs:
   rust:
@@ -18,12 +16,12 @@ jobs:
         with:
           toolchain: 1.88.0
           components: rustfmt
-      - name: Cargo test
-        working-directory: grail
-        run: cargo test
       - name: Cargo fmt
         working-directory: grail
         run: cargo fmt --check
+      - name: Cargo test
+        working-directory: grail
+        run: cargo test
 
   docker:
     runs-on: ubuntu-latest
