@@ -3,9 +3,9 @@ FROM node:22-slim AS frontend-builder
 
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm ci --ignore-scripts 2>/dev/null || npm install
+RUN npm ci --ignore-scripts || npm install
 COPY frontend/ .
-RUN npx vite build
+RUN npm run build
 
 # ── Stage 2: Build Rust backend ────────────────────────────────────────
 FROM rust:1.88-slim-bookworm AS builder
@@ -68,4 +68,3 @@ RUN chmod +x /entrypoint.sh
 
 EXPOSE 3000
 ENTRYPOINT ["/entrypoint.sh"]
-

@@ -5,10 +5,10 @@ export function GuardrailsPage() {
   const [rules, setRules] = useState<GuardrailData[]>([]);
   const [error, setError] = useState('');
   const [name, setName] = useState('');
-  const [kind, setKind] = useState('shell_command');
-  const [action, setAction] = useState('deny');
+  const [kind, setKind] = useState('command');
+  const [action, setAction] = useState('require_approval');
   const [priority, setPriority] = useState('100');
-  const [patternKind, setPatternKind] = useState('contains');
+  const [patternKind, setPatternKind] = useState('regex');
   const [pattern, setPattern] = useState('');
 
   const load = () => api.getGuardrails().then((d) => setRules(d.rules)).catch((e) => setError(e.message));
@@ -25,7 +25,7 @@ export function GuardrailsPage() {
   return (
     <>
       <h2>Guardrails</h2>
-      <p className="section-desc">Rules that control which shell commands the agent can execute.</p>
+      <p className="section-desc">Command execution guardrails.</p>
 
       {error && <div className="card" style={{ color: 'var(--red)' }}>Error: {error}</div>}
 
@@ -39,24 +39,23 @@ export function GuardrailsPage() {
           <div className="form-group">
             <label className="form-label">Kind</label>
             <select className="form-select" value={kind} onChange={(e) => setKind(e.target.value)}>
-              <option value="shell_command">Shell Command</option>
-              <option value="file_write">File Write</option>
+              <option value="command">command</option>
             </select>
           </div>
           <div className="form-group">
             <label className="form-label">Action</label>
             <select className="form-select" value={action} onChange={(e) => setAction(e.target.value)}>
-              <option value="deny">Deny</option>
-              <option value="allow">Allow</option>
-              <option value="approve">Require Approval</option>
+              <option value="require_approval">require_approval</option>
+              <option value="deny">deny</option>
+              <option value="allow">allow</option>
             </select>
           </div>
           <div className="form-group">
             <label className="form-label">Pattern Kind</label>
             <select className="form-select" value={patternKind} onChange={(e) => setPatternKind(e.target.value)}>
-              <option value="contains">Contains</option>
-              <option value="regex">Regex</option>
-              <option value="glob">Glob</option>
+              <option value="regex">regex</option>
+              <option value="exact">exact</option>
+              <option value="substring">substring</option>
             </select>
           </div>
           <div className="form-group">

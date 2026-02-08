@@ -200,11 +200,7 @@ async fn main() -> anyhow::Result<()> {
             "/context/edit",
             get(admin_context_edit_get).post(admin_context_edit_post),
         )
-        .route("/context/view", get(admin_context_view_get))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            admin_basic_auth,
-        ));
+        .route("/context/view", get(admin_context_view_get));
 
     let api_routes = Router::new()
         .route("/status", get(api::api_status))
@@ -248,22 +244,16 @@ async fn main() -> anyhow::Result<()> {
         .route("/auth/device/cancel", post(api::api_auth_device_cancel))
         .route("/auth/logout", post(api::api_auth_logout))
         .route("/diagnostics", get(api::api_diagnostics))
-        .route("/diagnostics/codex", post(api::api_diagnostics_codex))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            admin_basic_auth,
-        ));
+        .route("/diagnostics/codex", post(api::api_diagnostics_codex));
 
     let app = Router::new()
         .route("/", get(|| async { Redirect::to("/admin/status") }))
         .route("/healthz", get(healthz))
         .route("/slack/events", post(slack_events))
         .route("/slack/actions", post(slack_actions))
-        .route("/telegram/webhook", post(telegram_webhook))
-        // Old Askama HTML admin routes removed — React SPA served via fallback.
-        .nest("/api/admin", api_routes);
+        .route("/telegram/webhook", post(telegram_webhook));
 
-    // If frontend-dist dir exists, serve the SPA from it as fallback.
+    // If frontend-dist exists, serve the React SPA at /admin and assets at /assets.
     let frontend_dir = state
         .config
         .data_dir
@@ -275,16 +265,29 @@ async fn main() -> anyhow::Result<()> {
         .map(std::path::PathBuf::from)
         .unwrap_or(frontend_dir);
 
-    let app = if frontend_dir_env.join("index.html").exists() {
-        info!(dir = %frontend_dir_env.display(), "serving React SPA from frontend-dist");
-        let serve_dir = tower_http::services::ServeDir::new(&frontend_dir_env).not_found_service(
-            tower_http::services::ServeFile::new(frontend_dir_env.join("index.html")),
+    let admin_protected = if frontend_dir_env.join("index.html").exists() {
+        info!(
+            dir = %frontend_dir_env.display(),
+            "serving React SPA from frontend-dist"
         );
-        app.fallback_service(serve_dir)
+        let spa = tower_http::services::ServeFile::new(frontend_dir_env.join("index.html"));
+        let assets = tower_http::services::ServeDir::new(frontend_dir_env.join("assets"));
+        Router::new()
+            .nest_service("/admin", spa)
+            .nest_service("/assets", assets)
+            .nest("/api/admin", api_routes)
     } else {
-        info!("frontend-dist not found; SPA fallback disabled");
-        app
-    };
+        info!("frontend-dist not found; serving Askama admin UI");
+        Router::new()
+            .nest("/admin", admin)
+            .nest("/api/admin", api_routes)
+    }
+    .layer(middleware::from_fn_with_state(
+        state.clone(),
+        admin_basic_auth,
+    ));
+
+    let app = app.merge(admin_protected);
 
     let app = app
         .with_state(state)
@@ -312,8 +315,10 @@ async fn admin_basic_auth(
             if !csrf_ok(&req) {
                 return (StatusCode::FORBIDDEN, "forbidden").into_response();
             }
+            let path = req.uri().path().to_string();
             let mut resp = next.run(req).await;
             set_admin_security_headers(resp.headers_mut());
+            set_admin_cache_headers(path.as_str(), resp.headers_mut());
             resp
         }
         Ok(false) => unauthorized_basic(),
@@ -396,10 +401,7 @@ fn csrf_ok(req: &axum::http::Request<axum::body::Body>) -> bool {
 }
 
 fn set_admin_security_headers(headers: &mut HeaderMap) {
-    use axum::http::header::{CACHE_CONTROL, PRAGMA};
-
-    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
+    // Note: Cache-Control is set separately based on route/asset type.
     headers.insert(
         axum::http::header::HeaderName::from_static("x-frame-options"),
         HeaderValue::from_static("DENY"),
@@ -417,13 +419,30 @@ fn set_admin_security_headers(headers: &mut HeaderMap) {
         HeaderValue::from_static("noindex, nofollow, nosnippet"),
     );
 
-    // Tight CSP: no scripts, allow inline styles for server-rendered templates.
+    // CSP must allow scripts for the React SPA and inline style attributes used throughout the UI.
     headers.insert(
-        axum::http::header::HeaderName::from_static("content-security-policy"),
-        HeaderValue::from_static(
-            "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
-        ),
-    );
+	        axum::http::header::HeaderName::from_static("content-security-policy"),
+	        HeaderValue::from_static(
+	            "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+	        ),
+	    );
+}
+
+fn set_admin_cache_headers(path: &str, headers: &mut HeaderMap) {
+    use axum::http::header::{CACHE_CONTROL, PRAGMA, VARY};
+
+    if path.starts_with("/assets/") {
+        // Vite outputs content-hashed assets: safe to cache aggressively.
+        headers.insert(
+            CACHE_CONTROL,
+            HeaderValue::from_static("private, max-age=31536000, immutable"),
+        );
+        headers.remove(PRAGMA);
+    } else {
+        headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
+    }
+    headers.insert(VARY, HeaderValue::from_static("Authorization"));
 }
 
 fn host_from_url(s: &str) -> Option<&str> {

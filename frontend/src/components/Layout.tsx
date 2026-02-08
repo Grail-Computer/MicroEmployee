@@ -1,5 +1,4 @@
-import { NavLink, useLocation } from 'react-router-dom';
-import type { ReactNode } from 'react';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
 
 const NAV_ITEMS = [
   { to: '/status', label: 'Status' },
@@ -14,7 +13,7 @@ const NAV_ITEMS = [
   { to: '/diagnostics', label: 'Diagnostics' },
 ];
 
-export function Layout({ children }: { children: ReactNode }) {
+export function Layout() {
   const location = useLocation();
 
   return (
@@ -35,7 +34,9 @@ export function Layout({ children }: { children: ReactNode }) {
           ))}
         </nav>
       </header>
-      <main className="app-main">{children}</main>
+      <main className="app-main">
+        <Outlet />
+      </main>
     </div>
   );
 }

@@ -6,13 +6,33 @@ export function SettingsPage() {
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [secretBusy, setSecretBusy] = useState('');
+  const [secrets, setSecrets] = useState({
+    openai: '',
+    slack_signing: '',
+    slack_bot: '',
+    telegram_bot: '',
+    telegram_webhook: '',
+    brave: '',
+  });
+
+  const load = () =>
+    api
+      .getSettings()
+      .then((d) => {
+        setData(d);
+        setError('');
+      })
+      .catch((e) => setError(e.message));
 
   useEffect(() => {
-    api.getSettings().then(setData).catch((e) => setError(e.message));
+    load();
   }, []);
 
-  if (error) return <div className="card" style={{ color: 'var(--red)' }}>Error: {error}</div>;
-  if (!data) return <div className="loading">Loading…</div>;
+  if (!data) {
+    if (error) return <div className="card" style={{ color: 'var(--red)' }}>Error: {error}</div>;
+    return <div className="loading">Loading…</div>;
+  }
 
   const update = (key: keyof SettingsData, value: string | number | boolean) => {
     setData((prev) => prev ? { ...prev, [key]: value } : prev);
@@ -24,11 +44,40 @@ export function SettingsPage() {
     setSaving(true);
     try {
       await api.saveSettings(data);
+      setError('');
       setSaved(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Save failed');
     }
     setSaving(false);
+  };
+
+  const saveSecret = async (key: keyof typeof secrets) => {
+    const value = secrets[key].trim();
+    if (!value) {
+      setError('Secret value is empty');
+      return;
+    }
+    setSecretBusy(key);
+    try {
+      await api.setSecret(key, value);
+      setSecrets((prev) => ({ ...prev, [key]: '' }));
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Secret save failed');
+    }
+    setSecretBusy('');
+  };
+
+  const clearSecret = async (key: keyof typeof secrets) => {
+    setSecretBusy(key);
+    try {
+      await api.deleteSecret(key);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Secret clear failed');
+    }
+    setSecretBusy('');
   };
 
   const secretRow = (label: string, key: string, isSet: boolean) => (
@@ -42,10 +91,37 @@ export function SettingsPage() {
     </div>
   );
 
+  const secretManagerRow = (
+    label: string,
+    key: keyof typeof secrets,
+    placeholder?: string,
+  ) => (
+    <div className="form-group" key={key}>
+      <label className="form-label">{label}</label>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <input
+          className="form-input"
+          type="password"
+          value={secrets[key]}
+          onChange={(e) => setSecrets((prev) => ({ ...prev, [key]: e.target.value }))}
+          placeholder={placeholder}
+          style={{ flex: 1 }}
+        />
+        <button className="btn btn-sm" onClick={() => saveSecret(key)} disabled={secretBusy === key}>
+          {secretBusy === key ? 'Saving…' : 'Save'}
+        </button>
+        <button className="btn btn-sm btn-danger" onClick={() => clearSecret(key)} disabled={secretBusy === key}>
+          Clear
+        </button>
+      </div>
+    </div>
+  );
+
   return (
     <>
       <h2>Settings</h2>
       <p className="section-desc">Configure your agent's behavior, integrations, and permissions.</p>
+      {error && <div className="card" style={{ color: 'var(--red)' }}>Error: {error}</div>}
 
       <div className="card">
         <div className="card-title">Agent Identity</div>
@@ -69,13 +145,23 @@ export function SettingsPage() {
           <div className="form-group">
             <label className="form-label">Reasoning Effort</label>
             <select className="form-select" value={data.reasoning_effort} onChange={(e) => update('reasoning_effort', e.target.value)}>
-              <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option>
+              <option value="">Default</option>
+              <option value="none">none</option>
+              <option value="minimal">minimal</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="xhigh">xhigh</option>
             </select>
           </div>
           <div className="form-group">
             <label className="form-label">Reasoning Summary</label>
             <select className="form-select" value={data.reasoning_summary} onChange={(e) => update('reasoning_summary', e.target.value)}>
-              <option value="auto">Auto</option><option value="concise">Concise</option><option value="detailed">Detailed</option>
+              <option value="">Default</option>
+              <option value="auto">auto</option>
+              <option value="concise">concise</option>
+              <option value="detailed">detailed</option>
+              <option value="none">none</option>
             </select>
           </div>
         </div>
@@ -90,13 +176,16 @@ export function SettingsPage() {
         <div className="form-group">
           <label className="form-label">Permissions Mode</label>
           <select className="form-select" value={data.permissions_mode} onChange={(e) => update('permissions_mode', e.target.value)} style={{ width: 200 }}>
-            <option value="full">Full</option><option value="suggest">Suggest</option><option value="ask-always">Ask Always</option>
+            <option value="read">Read-only</option>
+            <option value="full">Full</option>
           </select>
         </div>
         <div className="form-group">
           <label className="form-label">Command Approval Mode</label>
           <select className="form-select" value={data.command_approval_mode} onChange={(e) => update('command_approval_mode', e.target.value)} style={{ width: 200 }}>
-            <option value="auto-edit">Auto Edit</option><option value="full-auto">Full Auto</option><option value="manual">Manual</option>
+            <option value="guardrails">Guardrails</option>
+            <option value="always_ask">Always ask</option>
+            <option value="auto">Auto-approve (not recommended)</option>
           </select>
         </div>
         <div className="form-checkbox-row">
@@ -187,6 +276,28 @@ export function SettingsPage() {
           {secretRow('Telegram Webhook Secret', 'telegram_webhook', data.telegram_webhook_secret_set)}
           {secretRow('Brave Search API Key', 'brave', data.brave_search_api_key_set)}
         </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">Manage Secrets</div>
+        {data.master_key_set ? (
+          <>
+            <p className="section-desc" style={{ marginTop: 0 }}>
+              Environment variables take precedence over stored secrets.
+            </p>
+            {secretManagerRow('OpenAI API Key', 'openai', 'sk-…')}
+            {secretManagerRow('Slack Signing Secret', 'slack_signing')}
+            {secretManagerRow('Slack Bot Token', 'slack_bot', 'xoxb-…')}
+            {secretManagerRow('Telegram Bot Token', 'telegram_bot', '123456:ABC…')}
+            {secretManagerRow('Telegram Webhook Secret', 'telegram_webhook')}
+            {secretManagerRow('Brave Search API Key', 'brave', 'BSA-…')}
+          </>
+        ) : (
+          <p className="section-desc" style={{ marginTop: 0 }}>
+            Set <span className="pill">GRAIL_MASTER_KEY</span> to enable storing secrets in SQLite.
+            Otherwise, set these as environment variables.
+          </p>
+        )}
       </div>
 
       <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>

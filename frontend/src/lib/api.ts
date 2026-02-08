@@ -28,7 +28,7 @@ export const api = {
   setSecret: (key: string, value: string) =>
     request<{ ok: boolean }>(`/secrets/${key}`, { method: 'POST', body: JSON.stringify({ value }) }),
   deleteSecret: (key: string) =>
-    request<{ ok: boolean }>(`/secrets/${key}/delete`, { method: 'POST' }),
+    request<{ ok: boolean }>(`/secrets/${key}`, { method: 'DELETE' }),
 
   // Tasks
   getTasks: () => request<{ tasks: TaskData[] }>('/tasks'),

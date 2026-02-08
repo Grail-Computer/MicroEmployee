@@ -4,10 +4,20 @@ import { api, type AuthData } from '../lib/api';
 export function AuthPage() {
   const [data, setData] = useState<AuthData | null>(null);
   const [error, setError] = useState('');
-  const load = () => api.getAuth().then(setData).catch((e) => setError(e.message));
+  const load = () =>
+    api
+      .getAuth()
+      .then((d) => {
+        setData(d);
+        setError('');
+      })
+      .catch((e) => setError(e.message));
   useEffect(() => { load(); }, []);
 
-  if (!data) return <div className="loading">Loading…</div>;
+  if (!data) {
+    if (error) return <div className="card" style={{ color: 'var(--red)' }}>Error: {error}</div>;
+    return <div className="loading">Loading…</div>;
+  }
 
   const boolPill = (set: boolean) => (
     <span className={`pill ${set ? 'pill-ok' : 'pill-bad'}`}>

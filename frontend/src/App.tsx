@@ -13,20 +13,32 @@ import { DiagnosticsPage } from './pages/DiagnosticsPage';
 
 export default function App() {
   return (
-    <Layout>
-      <Routes>
-        <Route path="/" element={<Navigate to="/status" replace />} />
-        <Route path="/status" element={<StatusPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/tasks" element={<TasksPage />} />
-        <Route path="/cron" element={<CronPage />} />
-        <Route path="/guardrails" element={<GuardrailsPage />} />
-        <Route path="/approvals" element={<ApprovalsPage />} />
-        <Route path="/memory" element={<MemoryPage />} />
-        <Route path="/context/*" element={<ContextPage />} />
-        <Route path="/auth" element={<AuthPage />} />
-        <Route path="/diagnostics" element={<DiagnosticsPage />} />
-      </Routes>
-    </Layout>
+    <Routes>
+      <Route path="/" element={<Layout />}>
+        <Route index element={<Navigate to="status" replace />} />
+        <Route path="status" element={<StatusPage />} />
+        <Route path="settings" element={<SettingsPage />} />
+        <Route path="tasks" element={<TasksPage />} />
+        <Route path="cron" element={<CronPage />} />
+        <Route path="guardrails" element={<GuardrailsPage />} />
+        <Route path="approvals" element={<ApprovalsPage />} />
+        <Route path="memory" element={<MemoryPage />} />
+        <Route path="context/*" element={<ContextPage />} />
+        <Route path="auth" element={<AuthPage />} />
+        <Route path="diagnostics" element={<DiagnosticsPage />} />
+        <Route path="*" element={<NotFoundPage />} />
+      </Route>
+    </Routes>
+  );
+}
+
+function NotFoundPage() {
+  return (
+    <div className="card">
+      <div className="card-title">Not found</div>
+      <p className="section-desc" style={{ margin: 0 }}>
+        No route matched this URL.
+      </p>
+    </div>
   );
 }

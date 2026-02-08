@@ -12,7 +12,14 @@ export function CronPage() {
   const [everySeconds, setEverySeconds] = useState('3600');
   const [cronExpr, setCronExpr] = useState('');
 
-  const load = () => api.getCron().then(setData).catch((e) => setError(e.message));
+  const load = () =>
+    api
+      .getCron()
+      .then((d) => {
+        setData(d);
+        setError('');
+      })
+      .catch((e) => setError(e.message));
   useEffect(() => { load(); }, []);
 
   const addJob = async () => {
@@ -28,7 +35,10 @@ export function CronPage() {
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed'); }
   };
 
-  if (!data) return <div className="loading">Loading…</div>;
+  if (!data) {
+    if (error) return <div className="card" style={{ color: 'var(--red)' }}>Error: {error}</div>;
+    return <div className="loading">Loading…</div>;
+  }
 
   return (
     <>

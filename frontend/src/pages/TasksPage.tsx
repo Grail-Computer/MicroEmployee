@@ -9,9 +9,10 @@ export function TasksPage() {
   useEffect(() => { load(); }, []);
 
   const statusColor = (s: string) => {
-    if (s === 'done') return 'var(--green)';
-    if (s === 'error' || s === 'cancelled') return 'var(--red)';
+    if (s === 'succeeded') return 'var(--green)';
+    if (s === 'failed' || s === 'cancelled') return 'var(--red)';
     if (s === 'running') return 'var(--accent)';
+    if (s === 'queued') return 'var(--yellow)';
     return 'var(--yellow)';
   };
 
@@ -45,10 +46,10 @@ export function TasksPage() {
               <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{t.created_at}</td>
               <td>
                 <div style={{ display: 'flex', gap: 4 }}>
-                  {(t.status === 'pending' || t.status === 'running') && (
+                  {t.status === 'queued' && (
                     <button className="btn btn-sm btn-danger" onClick={() => { api.cancelTask(t.id).then(load); }}>Cancel</button>
                   )}
-                  {(t.status === 'error' || t.status === 'cancelled') && (
+                  {(t.status === 'failed' || t.status === 'cancelled') && (
                     <button className="btn btn-sm" onClick={() => { api.retryTask(t.id).then(load); }}>Retry</button>
                   )}
                 </div>

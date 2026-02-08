@@ -190,16 +190,27 @@ function FileEditor() {
 export function ContextPage() {
   const [files, setFiles] = useState<ContextFileData[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    api.getContext().then((d) => { setFiles(d.files); setLoading(false); }).catch(() => setLoading(false));
+    api
+      .getContext()
+      .then((d) => {
+        setFiles(d.files);
+        setLoading(false);
+      })
+      .catch((e) => {
+        setError(e instanceof Error ? e.message : 'Failed to load context');
+        setLoading(false);
+      });
   }, []);
 
   if (loading) return <div className="loading">Loading…</div>;
+  if (error) return <div className="card" style={{ color: 'var(--red)' }}>Error: {error}</div>;
 
   return (
     <Routes>
-      <Route path="/" element={<FileTreePage files={files} />} />
+      <Route index element={<FileTreePage files={files} />} />
       <Route path="view" element={<FileViewer />} />
       <Route path="edit" element={<FileEditor />} />
     </Routes>
