@@ -2,16 +2,16 @@ import { NavLink, useLocation } from 'react-router-dom';
 import type { ReactNode } from 'react';
 
 const NAV_ITEMS = [
-  { to: '/admin/status', label: 'Status' },
-  { to: '/admin/settings', label: 'Settings' },
-  { to: '/admin/cron', label: 'Cron' },
-  { to: '/admin/guardrails', label: 'Guardrails' },
-  { to: '/admin/approvals', label: 'Approvals' },
-  { to: '/admin/memory', label: 'Memory' },
-  { to: '/admin/context', label: 'Context' },
-  { to: '/admin/auth', label: 'Auth' },
-  { to: '/admin/tasks', label: 'Queue' },
-  { to: '/admin/diagnostics', label: 'Diagnostics' },
+  { to: '/status', label: 'Status' },
+  { to: '/settings', label: 'Settings' },
+  { to: '/cron', label: 'Cron' },
+  { to: '/guardrails', label: 'Guardrails' },
+  { to: '/approvals', label: 'Approvals' },
+  { to: '/memory', label: 'Memory' },
+  { to: '/context', label: 'Context' },
+  { to: '/auth', label: 'Auth' },
+  { to: '/tasks', label: 'Queue' },
+  { to: '/diagnostics', label: 'Diagnostics' },
 ];
 
 export function Layout({ children }: { children: ReactNode }) {

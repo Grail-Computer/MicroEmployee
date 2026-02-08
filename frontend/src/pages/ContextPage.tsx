@@ -54,11 +54,11 @@ function DirNode({ name, node, defaultOpen }: { name: string; node: TreeNode; de
               <svg style={{ width: 16, height: 16, opacity: 0.4, color: 'var(--text-secondary)', flexShrink: 0 }} viewBox="0 0 16 16" fill="currentColor">
                 <path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"/>
               </svg>
-              <Link className="tree-file-link" to={`/admin/context/view?path=${encodeURIComponent(f.path)}`}>{f.name}</Link>
+              <Link className="tree-file-link" to={`/context/view?path=${encodeURIComponent(f.path)}`}>{f.name}</Link>
               <span className="tree-file-size">{formatBytes(f.bytes)}</span>
               <span className="tree-file-actions">
-                <Link to={`/admin/context/view?path=${encodeURIComponent(f.path)}`}>View</Link>
-                <Link to={`/admin/context/edit?path=${encodeURIComponent(f.path)}`}>Edit</Link>
+                <Link to={`/context/view?path=${encodeURIComponent(f.path)}`}>View</Link>
+                <Link to={`/context/edit?path=${encodeURIComponent(f.path)}`}>Edit</Link>
               </span>
             </div>
           ))}
@@ -84,11 +84,11 @@ function FileTreePage({ files }: { files: ContextFileData[] }) {
             <svg style={{ width: 16, height: 16, opacity: 0.4, color: 'var(--text-secondary)', flexShrink: 0 }} viewBox="0 0 16 16" fill="currentColor">
               <path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"/>
             </svg>
-            <Link className="tree-file-link" to={`/admin/context/view?path=${encodeURIComponent(f.path)}`}>{f.name}</Link>
+            <Link className="tree-file-link" to={`/context/view?path=${encodeURIComponent(f.path)}`}>{f.name}</Link>
             <span className="tree-file-size">{formatBytes(f.bytes)}</span>
             <span className="tree-file-actions">
-              <Link to={`/admin/context/view?path=${encodeURIComponent(f.path)}`}>View</Link>
-              <Link to={`/admin/context/edit?path=${encodeURIComponent(f.path)}`}>Edit</Link>
+              <Link to={`/context/view?path=${encodeURIComponent(f.path)}`}>View</Link>
+              <Link to={`/context/edit?path=${encodeURIComponent(f.path)}`}>Edit</Link>
             </span>
           </div>
         ))}
@@ -116,11 +116,11 @@ function FileViewer() {
     <>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Link to="/admin/context" style={{ color: 'var(--text-secondary)', fontSize: 14 }}>← Context</Link>
+          <Link to="/context" style={{ color: 'var(--text-secondary)', fontSize: 14 }}>← Context</Link>
           <span style={{ color: 'var(--text-tertiary)' }}>/</span>
           <h2 style={{ margin: 0, fontSize: 16 }}>{path}</h2>
         </div>
-        <Link to={`/admin/context/edit?path=${encodeURIComponent(path)}`} className="btn btn-sm">Edit</Link>
+        <Link to={`/context/edit?path=${encodeURIComponent(path)}`} className="btn btn-sm">Edit</Link>
       </div>
       {loading ? <div className="loading">Loading…</div> : (
         isMarkdown ? (
@@ -156,7 +156,7 @@ function FileEditor() {
     setSaving(true);
     try {
       await api.saveContextFile(path, content);
-      navigate(`/admin/context/view?path=${encodeURIComponent(path)}`);
+      navigate(`/context/view?path=${encodeURIComponent(path)}`);
     } catch { /* noop */ }
     setSaving(false);
   }, [path, content, navigate]);
@@ -165,13 +165,13 @@ function FileEditor() {
     <>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Link to="/admin/context" style={{ color: 'var(--text-secondary)', fontSize: 14 }}>← Context</Link>
+          <Link to="/context" style={{ color: 'var(--text-secondary)', fontSize: 14 }}>← Context</Link>
           <span style={{ color: 'var(--text-tertiary)' }}>/</span>
           <h2 style={{ margin: 0, fontSize: 16 }}>Editing: {path}</h2>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
-          <Link to={`/admin/context/view?path=${encodeURIComponent(path)}`} className="btn btn-sm" style={{ display: 'inline-flex', alignItems: 'center' }}>Cancel</Link>
+          <Link to={`/context/view?path=${encodeURIComponent(path)}`} className="btn btn-sm" style={{ display: 'inline-flex', alignItems: 'center' }}>Cancel</Link>
         </div>
       </div>
       {loading ? <div className="loading">Loading…</div> : (
