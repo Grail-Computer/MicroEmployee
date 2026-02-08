@@ -103,7 +103,7 @@ pub async fn get_settings(pool: &SqlitePool) -> anyhow::Result<Settings> {
         auto_apply_cron_jobs: row.get::<i64, _>("auto_apply_cron_jobs") != 0,
         agent_name: row
             .get::<Option<String>, _>("agent_name")
-            .unwrap_or_else(|| "μEmployee".to_string()),
+            .unwrap_or_else(|| "Grail".to_string()),
         role_description: row
             .get::<Option<String>, _>("role_description")
             .unwrap_or_default(),

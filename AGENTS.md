@@ -1,8 +1,8 @@
-# AGENTS.md — MicroEmployee
+# AGENTS.md — Grail (MicroEmployee)
 
 ## What This Is
 
-MicroEmployee is a **Slack/Telegram bot** backed by an autonomous AI agent (OpenAI Codex CLI). It receives messages from Slack or Telegram, queues them as tasks in a SQLite database, runs Codex in a sandboxed subprocess to produce answers, and posts the results back. It ships with an admin dashboard for configuration, monitoring, and approvals.
+Grail is a **Slack/Telegram bot** backed by an autonomous AI agent (OpenAI Codex CLI). It receives messages from Slack or Telegram, queues them as tasks in a SQLite database, runs Codex in a sandboxed subprocess to produce answers, and posts the results back. It ships with an admin dashboard for configuration, monitoring, and approvals.
 
 **Production deployment**: Railway (Docker).
 

@@ -23,17 +23,8 @@ guardrails/
 # Local agent scratch/skills (do not commit)
 .agent/
 frontend/node_modules/*
-demo/node_modules/*
 **/*.tsbuildinfo
-demo/output/raw/*
 .DS_Store
-demo/output/raw/
-demo/output/raw/**
-demo/output/tmp-*
-demo/output/debug*
-demo/output/slack_debug.png
-demo/output/*-palette.png
-demo/output/variants/*-palette.png
 
 # Video files (use GIFs for README)
 *.webm

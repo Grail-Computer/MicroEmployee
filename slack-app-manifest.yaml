@@ -1,11 +1,11 @@
 display_information:
-  name: MicroEmployee
-  description: Slack micro-employee (Codex-powered)
+  name: Grail
+  description: Your micro-employee (Codex-powered)
   background_color: "#000000"
 
 features:
   bot_user:
-    display_name: MicroEmployee
+    display_name: Grail
     always_online: true
 
 oauth_config:

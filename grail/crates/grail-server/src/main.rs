@@ -335,7 +335,7 @@ fn unauthorized_basic() -> Response {
     let mut resp = (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     resp.headers_mut().insert(
         axum::http::header::WWW_AUTHENTICATE,
-        HeaderValue::from_static("Basic realm=\"MicroEmployee\""),
+        HeaderValue::from_static("Basic realm=\"Grail\""),
     );
     resp
 }
@@ -711,7 +711,7 @@ async fn admin_settings_post(
     settings.agent_name = {
         let v = clamp_chars(form.agent_name.trim().to_string(), 48);
         if v.is_empty() {
-            "μEmployee".to_string()
+            "Grail".to_string()
         } else {
             v
         }
@@ -1299,7 +1299,7 @@ async fn admin_cron_add(
         .filter(|s| !s.is_empty())
     else {
         return Err(anyhow::anyhow!(
-            "workspace_id is not set yet. Mention μEmployee once in Slack so it can pin the workspace id."
+            "workspace_id is not set yet. Mention Grail once in Slack so it can pin the workspace id."
         )
         .into());
     };
@@ -1751,8 +1751,7 @@ async fn slack_events(
                                 crate::secrets::load_slack_bot_token_opt(&state).await
                             {
                                 let slack = SlackClient::new(state.http.clone(), token);
-                                let msg =
-                                    "Sorry, you're not authorized to use this MicroEmployee instance.";
+                                let msg = "Sorry, you're not authorized to use this Grail instance.";
                                 let _ = slack
                                     .post_message(&channel, thread_opt(&thread_ts), msg)
                                     .await;
@@ -1771,7 +1770,8 @@ async fn slack_events(
                                     crate::secrets::load_slack_bot_token_opt(&state).await
                                 {
                                     let slack = SlackClient::new(state.http.clone(), token);
-                                    let msg = "Sorry, this MicroEmployee instance isn't enabled in this channel.";
+                                    let msg =
+                                        "Sorry, this Grail instance isn't enabled in this channel.";
                                     let _ = slack
                                         .post_message(&channel, thread_opt(&thread_ts), msg)
                                         .await;

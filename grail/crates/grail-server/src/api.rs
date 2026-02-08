@@ -199,7 +199,7 @@ pub async fn api_settings_post(
     }
     if let Some(v) = form.agent_name {
         s.agent_name = if v.trim().is_empty() {
-            "μEmployee".to_string()
+            "Grail".to_string()
         } else {
             v
         };
