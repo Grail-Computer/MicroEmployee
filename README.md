@@ -10,22 +10,22 @@ In Telegram (DM or group), you can address it via `/microemployee ...` (or @ment
 
 ## Demo
 
-![Grail demo](demo/output/grail-demo.gif)
+![Grail demo](assets/demo/grail-demo.gif)
 
-Re-record the assets: see `demo/README.md`.
+Re-record the assets: see the `MicroEmployee-Demo-Video` repo.
 
 ## These Are The Things Grail Can Do
 
 1. Recap long threads into action items (and attach a markdown report).
-   - ![Thread recap](demo/output/variants/grail-v01-thread-recap.gif)
+   - ![Thread recap](assets/demo/variants/grail-v01-thread-recap.gif)
 2. Coordinate incident response: summarize state, owners, next steps.
-   - ![Incident commander](demo/output/variants/grail-v02-incident-commander.gif)
+   - ![Incident commander](assets/demo/variants/grail-v02-incident-commander.gif)
 3. Review PRs and call out risk areas with concrete suggestions.
-   - ![PR review](demo/output/variants/grail-v03-pr-review.gif)
+   - ![PR review](assets/demo/variants/grail-v03-pr-review.gif)
 4. Triage support requests and propose the next best actions.
-   - ![Support triage](demo/output/variants/grail-v05-support-triage.gif)
+   - ![Support triage](assets/demo/variants/grail-v05-support-triage.gif)
 5. Safely run operational commands with guardrails and in-Slack approvals.
-   - ![Guardrail approval](demo/output/variants/grail-v08-guardrail-approval.gif)
+   - ![Guardrail approval](assets/demo/variants/grail-v08-guardrail-approval.gif)
 
 Grail will:
 
