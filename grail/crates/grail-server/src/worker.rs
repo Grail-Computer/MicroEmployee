@@ -1194,7 +1194,8 @@ async fn process_task(
             }
             if !is_browser_login_needed {
                 if let Err(err) =
-                    apply_agent_guardrail_rules(state, task, &settings, &parsed.guardrail_rules).await
+                    apply_agent_guardrail_rules(state, task, &settings, &parsed.guardrail_rules)
+                        .await
                 {
                     warn!(error = %err, "failed to apply agent guardrail rules");
                 }
@@ -2280,7 +2281,9 @@ fn compose_browser_login_reply(
     }
     out.push_str(&format!("\n- Use browser profile: {profile_name}"));
     out.push_str("\n- Finish the authentication flow in the browser and let me continue here when you are signed in.");
-    out.push_str("\n- Do not share credentials or OTP codes in chat; log in directly in the browser window.");
+    out.push_str(
+        "\n- Do not share credentials or OTP codes in chat; log in directly in the browser window.",
+    );
 
     let instructions = browser_login_instructions
         .filter(|text| !text.trim().is_empty())

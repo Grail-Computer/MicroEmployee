@@ -46,15 +46,16 @@ impl BrowserEnvConfig {
             env_first_value("GRAIL_BROWSER_CDP_PORT", "OPENCLAW_BROWSER_CDP_PORT"),
             "9222",
         );
-        let novnc_enabled = enabled && (env_bool("GRAIL_BROWSER_ENABLE_NOVNC") || env_bool("OPENCLAW_BROWSER_ENABLE_NOVNC"));
+        let novnc_enabled = enabled
+            && (env_bool("GRAIL_BROWSER_ENABLE_NOVNC")
+                || env_bool("OPENCLAW_BROWSER_ENABLE_NOVNC"));
         let novnc_port = normalize_port(
             env_first_value("GRAIL_BROWSER_NOVNC_PORT", "OPENCLAW_BROWSER_NOVNC_PORT"),
             "6080",
         );
         let cdp_url_default = format!("http://127.0.0.1:{cdp_port}");
-        let novnc_url_default = format!(
-            "http://127.0.0.1:{novnc_port}/vnc.html?autoconnect=1&resize=remote"
-        );
+        let novnc_url_default =
+            format!("http://127.0.0.1:{novnc_port}/vnc.html?autoconnect=1&resize=remote");
 
         Self {
             enabled,
@@ -75,12 +76,18 @@ impl BrowserEnvConfig {
             },
             profile_name: {
                 normalize_profile_name(
-                    env_first_value("GRAIL_BROWSER_PROFILE_NAME", "OPENCLAW_BROWSER_PROFILE_NAME")
-                        .unwrap_or_else(|| "default".to_string()),
+                    env_first_value(
+                        "GRAIL_BROWSER_PROFILE_NAME",
+                        "OPENCLAW_BROWSER_PROFILE_NAME",
+                    )
+                    .unwrap_or_else(|| "default".to_string()),
                     "default",
                 )
             },
-            home: env_value("GRAIL_BROWSER_HOME", &env_value("OPENCLAW_BROWSER_HOME", "/data/browser-profiles")),
+            home: env_value(
+                "GRAIL_BROWSER_HOME",
+                &env_value("OPENCLAW_BROWSER_HOME", "/data/browser-profiles"),
+            ),
         }
     }
 }
@@ -102,7 +109,10 @@ fn normalize_port(value: Option<String>, default: &str) -> String {
 }
 
 fn normalize_http_url(value: Option<String>, default: &str) -> String {
-    let candidate = value.unwrap_or_else(|| default.to_string()).trim().to_string();
+    let candidate = value
+        .unwrap_or_else(|| default.to_string())
+        .trim()
+        .to_string();
     if candidate.starts_with("http://") || candidate.starts_with("https://") {
         candidate
     } else {
@@ -757,9 +767,9 @@ async fn spawn_codex_app_server(
     slack_bot_token: Option<&str>,
     slack_allow_channels: Option<&str>,
     brave_search_api_key: Option<&str>,
-        web_allow_domains: Option<&str>,
-        web_deny_domains: Option<&str>,
-        browser: &BrowserEnvConfig,
+    web_allow_domains: Option<&str>,
+    web_deny_domains: Option<&str>,
+    browser: &BrowserEnvConfig,
 ) -> anyhow::Result<CodexProc> {
     // Codex CLI argument surface has changed across versions. Some builds accept
     // `--listen stdio://` while others default to stdio and reject `--listen`.
@@ -779,13 +789,13 @@ async fn spawn_codex_app_server(
             slack_bot_token,
             slack_allow_channels,
             brave_search_api_key,
-                web_allow_domains,
-                web_deny_domains,
-                browser,
-            )
-            .await
-            {
-                Ok(proc) => return Ok(proc),
+            web_allow_domains,
+            web_deny_domains,
+            browser,
+        )
+        .await
+        {
+            Ok(proc) => return Ok(proc),
             Err(err) => {
                 warn!(error = %err, args = ?args, "failed to start codex app-server");
             }
@@ -803,9 +813,9 @@ async fn spawn_codex_with_args(
     slack_bot_token: Option<&str>,
     slack_allow_channels: Option<&str>,
     brave_search_api_key: Option<&str>,
-        web_allow_domains: Option<&str>,
-        web_deny_domains: Option<&str>,
-        browser: &BrowserEnvConfig,
+    web_allow_domains: Option<&str>,
+    web_deny_domains: Option<&str>,
+    browser: &BrowserEnvConfig,
 ) -> anyhow::Result<CodexProc> {
     let mut cmd = Command::new(codex_bin);
     cmd.args(args);
@@ -860,7 +870,10 @@ async fn spawn_codex_with_args(
     }
     if !browser.profile_name.is_empty() {
         cmd.env("GRAIL_BROWSER_PROFILE_NAME", browser.profile_name.as_str());
-        cmd.env("OPENCLAW_BROWSER_PROFILE_NAME", browser.profile_name.as_str());
+        cmd.env(
+            "OPENCLAW_BROWSER_PROFILE_NAME",
+            browser.profile_name.as_str(),
+        );
     }
     if !browser.home.is_empty() {
         cmd.env("GRAIL_BROWSER_HOME", browser.home.as_str());

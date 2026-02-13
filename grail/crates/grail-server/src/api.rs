@@ -12,10 +12,10 @@ use sqlx::Row;
 use std::str::FromStr;
 use std::time::Duration;
 
+use crate::codex::BrowserEnvConfig;
 use crate::db;
 use crate::models::PermissionsMode;
 use crate::AppState;
-use crate::codex::BrowserEnvConfig;
 
 type ApiResult<T> = Result<Json<T>, crate::AppError>;
 
@@ -921,7 +921,9 @@ pub async fn api_github_device_start(State(state): State<AppState>) -> ApiResult
 
     let client_id = crate::secrets::load_github_client_id_opt(&state)
         .await?
-        .context("GitHub device login is not configured. Set GITHUB_CLIENT_ID or save it in admin settings.")?;
+        .context(
+        "GitHub device login is not configured. Set GITHUB_CLIENT_ID or save it in admin settings.",
+    )?;
     let scope = std::env::var("GITHUB_OAUTH_SCOPE")
         .ok()
         .map(|s| s.trim().to_string())

@@ -107,14 +107,8 @@ fn decoding_key_for_kid(keys: &[Jwk], kid: &str) -> anyhow::Result<DecodingKey> 
         .iter()
         .find(|k| k.kid.as_deref() == Some(kid))
         .with_context(|| format!("teams jwk kid not found: {kid}"))?;
-    let n = jwk
-        .n
-        .as_deref()
-        .context("teams jwk missing modulus (n)")?;
-    let e = jwk
-        .e
-        .as_deref()
-        .context("teams jwk missing exponent (e)")?;
+    let n = jwk.n.as_deref().context("teams jwk missing modulus (n)")?;
+    let e = jwk.e.as_deref().context("teams jwk missing exponent (e)")?;
     DecodingKey::from_rsa_components(n, e).context("invalid teams jwk rsa components")
 }
 
@@ -149,8 +143,7 @@ pub async fn verify_incoming_token(
     validation.set_issuer(&["https://api.botframework.com"]);
     validation.leeway = 60;
 
-    decode::<serde_json::Value>(token, &decoding_key, &validation)
-        .context("verify teams jwt")?;
+    decode::<serde_json::Value>(token, &decoding_key, &validation).context("verify teams jwt")?;
     Ok(())
 }
 

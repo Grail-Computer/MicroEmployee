@@ -404,13 +404,7 @@ fn task_trace_url(state: &AppState, task_id: i64) -> String {
         .config
         .base_url
         .as_deref()
-        .map(|base| {
-            format!(
-                "{}/admin/tasks/{}",
-                base.trim_end_matches('/'),
-                task_id
-            )
-        })
+        .map(|base| format!("{}/admin/tasks/{}", base.trim_end_matches('/'), task_id))
         .unwrap_or_else(|| format!("/admin/tasks/{task_id}"))
 }
 
@@ -1931,7 +1925,11 @@ async fn whatsapp_webhook(
     let app_secret = match crate::secrets::load_whatsapp_app_secret_opt(&state).await {
         Ok(Some(v)) => v,
         Ok(None) => {
-            return (StatusCode::UNAUTHORIZED, "whatsapp app secret not configured").into_response();
+            return (
+                StatusCode::UNAUTHORIZED,
+                "whatsapp app secret not configured",
+            )
+                .into_response();
         }
         Err(err) => {
             error!(error = %err, "failed to load whatsapp app secret");
@@ -2213,7 +2211,9 @@ async fn msteams_webhook(
 
     let app_id = match crate::secrets::load_msteams_app_id_opt(&state).await {
         Ok(Some(v)) => v,
-        Ok(None) => return (StatusCode::UNAUTHORIZED, "teams app id not configured").into_response(),
+        Ok(None) => {
+            return (StatusCode::UNAUTHORIZED, "teams app id not configured").into_response()
+        }
         Err(err) => {
             error!(error = %err, "failed to load teams app id");
             return (StatusCode::INTERNAL_SERVER_ERROR, "secret error").into_response();
