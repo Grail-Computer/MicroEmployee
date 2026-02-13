@@ -77,6 +77,17 @@ pub struct Task {
 }
 
 #[derive(Debug, Clone)]
+pub struct TaskTrace {
+    pub id: i64,
+    pub task_id: i64,
+    pub event_type: String,
+    pub level: String,
+    pub message: String,
+    pub details: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone)]
 pub struct Session {
     pub conversation_key: String,
     pub codex_thread_id: Option<String>,

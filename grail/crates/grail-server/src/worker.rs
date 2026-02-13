@@ -13,6 +13,7 @@ use regex::Regex;
 use serde::Deserialize;
 use serde_json::json;
 use sha2::Digest;
+use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::codex::CodexManager;
@@ -232,15 +233,24 @@ async fn task_worker_loop(
                     Err(err) => {
                         let msg = format!("{err:#}");
                         warn!(error = %msg, task_id, worker_slot = slot, "task failed");
-                        let _ = db::complete_task_failure(&state.pool, task_id, &msg).await;
 
-                        // Proactive tasks should never spam the channel on failure.
-                        if !task.is_proactive {
-                            let user_msg = format!(
-                                "Task #{task_id} failed. Check /admin/tasks for details.\n\nError: {short}",
-                                short = shorten_error(&msg)
-                            );
-                            let _ = send_user_message(&state, &task, &user_msg).await;
+                        let was_cancel_requested =
+                            db::is_task_cancel_requested(&state.pool, task_id)
+                                .await
+                                .unwrap_or(false);
+                        if was_cancel_requested {
+                            let _ = db::complete_task_cancelled(&state.pool, task_id).await;
+                        } else {
+                            let _ = db::complete_task_failure(&state.pool, task_id, &msg).await;
+
+                            // Proactive tasks should never spam the channel on failure.
+                            if !task.is_proactive {
+                                let user_msg = format!(
+                                    "Task #{task_id} failed. Check /admin/tasks for details.\n\nError: {short}",
+                                    short = shorten_error(&msg)
+                                );
+                                let _ = send_user_message(&state, &task, &user_msg).await;
+                            }
                         }
                     }
                 }
@@ -554,7 +564,12 @@ fn extract_github_repo_pairs(text: &str) -> Vec<(String, String)> {
     for re in [&*RE_GITHUB_HTTP, &*RE_GITHUB_SSH] {
         for cap in re.captures_iter(text) {
             let owner = cap.get(1).map(|m| m.as_str()).unwrap_or("").trim();
-            let mut repo = cap.get(2).map(|m| m.as_str()).unwrap_or("").trim().to_string();
+            let mut repo = cap
+                .get(2)
+                .map(|m| m.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
             if owner.is_empty() || repo.is_empty() {
                 continue;
             }
@@ -895,16 +910,19 @@ async fn process_task(
     let cwd = state.config.data_dir.join("context");
     let cwd = tokio::fs::canonicalize(&cwd).await.unwrap_or(cwd);
 
-    let repo_context_text = match maybe_prepare_github_repos(state, &conversation_key, &cwd, task.prompt_text.trim()).await {
-        Ok((_items, txt)) => txt,
-        Err(err) => {
-            warn!(error = %err, task_id = task.id, "failed to prepare github repos");
-            format!(
-                "Repositories:\n- (repo preparation failed: {})\n\n",
-                shorten_error(&format!("{err:#}"))
-            )
-        }
-    };
+    let repo_context_text =
+        match maybe_prepare_github_repos(state, &conversation_key, &cwd, task.prompt_text.trim())
+            .await
+        {
+            Ok((_items, txt)) => txt,
+            Err(err) => {
+                warn!(error = %err, task_id = task.id, "failed to prepare github repos");
+                format!(
+                    "Repositories:\n- (repo preparation failed: {})\n\n",
+                    shorten_error(&format!("{err:#}"))
+                )
+            }
+        };
 
     let thread_id = codex
         .resume_or_start_thread(session.codex_thread_id.as_deref(), &settings, &cwd)
@@ -945,6 +963,30 @@ async fn process_task(
         allow_web_mcp,
     );
 
+    let (trace_tx, mut trace_rx) = mpsc::unbounded_channel::<crate::codex::CodexTurnEvent>();
+    let trace_pool = state.pool.clone();
+    let trace_task_id = task.id;
+    let trace_writer = tokio::spawn(async move {
+        while let Some(event) = trace_rx.recv().await {
+            if let Err(err) = db::create_task_trace(
+                &trace_pool,
+                trace_task_id,
+                &event.event_type,
+                &event.level,
+                &event.message,
+                &event.details,
+            )
+            .await
+            {
+                warn!(
+                    error = %err,
+                    task_id = trace_task_id,
+                    "failed to persist task trace"
+                );
+            }
+        }
+    });
+
     let output_schema = agent_output_schema();
 
     let out = codex
@@ -956,8 +998,11 @@ async fn process_task(
             &cwd,
             &input,
             output_schema.clone(),
+            Some(&trace_tx),
         )
         .await?;
+    drop(trace_tx);
+    let _ = trace_writer.await;
 
     let mut parsed = match parse_agent_json(&out.agent_message_text) {
         Ok(v) => Some(v),
@@ -1265,6 +1310,7 @@ async fn observe_and_maybe_reflect(
             cwd,
             &observer_input,
             observer_schema,
+            None,
         )
         .await?;
     let obs = parse_observer_json(&out.agent_message_text)?;
@@ -1302,6 +1348,7 @@ async fn observe_and_maybe_reflect(
             cwd,
             &reflector_input,
             reflector_schema,
+            None,
         )
         .await?;
     let mut refl = parse_reflector_json(&out.agent_message_text)?;
@@ -2067,6 +2114,7 @@ Return ONLY a single JSON object that matches the schema.",
                 cwd,
                 &repair_input,
                 output_schema.clone(),
+                None,
             )
             .await?;
         match parse_agent_json(&out.agent_message_text) {

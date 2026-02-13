@@ -297,10 +297,59 @@ pub async fn api_tasks(State(state): State<AppState>) -> ApiResult<Value> {
                 "result_text": t.result_text.unwrap_or_default(),
                 "error_text": t.error_text.unwrap_or_default(),
                 "created_at": format!("{}", t.created_at),
+                "started_at": t.started_at.map_or_else(|| String::new(), |ts| format!("{ts}")),
+                "finished_at": t.finished_at.map_or_else(|| String::new(), |ts| format!("{ts}")),
             })
         })
         .collect();
     Ok(Json(json!({"tasks": rows})))
+}
+
+pub async fn api_task_details(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> ApiResult<Value> {
+    let task = db::get_task(&state.pool, id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("task not found"))?;
+    let traces = db::list_task_traces(&state.pool, id, 1000).await?;
+    let trace_rows: Vec<Value> = traces
+        .into_iter()
+        .map(|t| {
+            json!({
+                "id": t.id,
+                "event_type": t.event_type,
+                "level": t.level,
+                "message": t.message,
+                "details": t.details,
+                "created_at": format!("{}", t.created_at),
+            })
+        })
+        .collect();
+
+    let task_value = json!({
+        "id": task.id,
+        "status": task.status,
+        "provider": task.provider,
+        "is_proactive": task.is_proactive,
+        "workspace_id": task.workspace_id,
+        "conversation_key": task.conversation_key,
+        "channel_id": task.channel_id,
+        "thread_ts": task.thread_ts,
+        "event_ts": task.event_ts,
+        "requested_by_user_id": task.requested_by_user_id,
+        "prompt_text": task.prompt_text,
+        "files_json": task.files_json,
+        "result_text": task.result_text.unwrap_or_default(),
+        "error_text": task.error_text.unwrap_or_default(),
+        "created_at": format!("{}", task.created_at),
+        "started_at": task.started_at.map_or_else(|| String::new(), |ts| format!("{ts}")),
+        "finished_at": task.finished_at.map_or_else(|| String::new(), |ts| format!("{ts}")),
+    });
+    Ok(Json(json!({
+        "task": task_value,
+        "traces": trace_rows,
+    })))
 }
 
 pub async fn api_task_cancel(

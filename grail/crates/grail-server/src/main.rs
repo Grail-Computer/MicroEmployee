@@ -7,8 +7,8 @@ mod config;
 mod cron_expr;
 mod crypto;
 mod db;
-mod guardrails;
 mod github_login;
+mod guardrails;
 mod models;
 mod secrets;
 mod slack;
@@ -28,7 +28,7 @@ use axum::extract::{DefaultBodyLimit, Form, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware;
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, get_service, post};
 use axum::Router;
 use clap::Parser;
 use serde::Deserialize;
@@ -189,6 +189,7 @@ async fn main() -> anyhow::Result<()> {
             post(admin_delete_telegram_webhook_secret),
         )
         .route("/tasks", get(admin_tasks))
+        .route("/tasks/{id}", get(admin_tasks_redirect))
         .route("/tasks/{id}/cancel", post(admin_task_cancel))
         .route("/tasks/{id}/retry", post(admin_task_retry))
         .route("/diagnostics", get(admin_diagnostics_get))
@@ -227,6 +228,7 @@ async fn main() -> anyhow::Result<()> {
             post(api::api_set_secret).delete(api::api_delete_secret),
         )
         .route("/tasks", get(api::api_tasks))
+        .route("/tasks/{id}", get(api::api_task_details))
         .route("/tasks/{id}/cancel", post(api::api_task_cancel))
         .route("/tasks/{id}/retry", post(api::api_task_retry))
         .route("/memory", get(api::api_memory))
@@ -296,7 +298,8 @@ async fn main() -> anyhow::Result<()> {
         let spa = tower_http::services::ServeFile::new(frontend_dir_env.join("index.html"));
         let assets = tower_http::services::ServeDir::new(frontend_dir_env.join("assets"));
         Router::new()
-            .nest_service("/admin", spa)
+            .route("/admin", get_service(spa.clone()))
+            .route("/admin/{*path}", get_service(spa))
             .nest_service("/assets", assets)
             .nest("/api/admin", api_routes)
     } else {
@@ -1167,6 +1170,10 @@ async fn admin_task_cancel(
     Ok(Redirect::to("/admin/tasks"))
 }
 
+async fn admin_tasks_redirect() -> AppResult<Redirect> {
+    Ok(Redirect::to("/admin/tasks"))
+}
+
 async fn admin_task_retry(
     State(state): State<AppState>,
     Path(id): Path<i64>,
@@ -1274,13 +1281,33 @@ Do not call tools."#;
     let schema = crate::worker::agent_output_schema();
     let result = codex
         .run_turn(
-            state, &task, &thread_id, &settings, &cwd, input_text, schema,
+            state, &task, &thread_id, &settings, &cwd, input_text, schema, None,
         )
         .await
         .map(|o| o.agent_message_text);
 
     codex.stop().await;
     result
+}
+
+fn task_trace_url(state: &AppState, task_id: i64) -> String {
+    let suffix = format!("/admin/tasks/{task_id}");
+    match state.config.base_url.as_deref() {
+        Some(base) if !base.trim().is_empty() => {
+            format!(
+                "{}/{}",
+                base.trim_end_matches('/'),
+                suffix.trim_start_matches('/')
+            )
+        }
+        _ => suffix,
+    }
+}
+
+fn task_link_message(task_id: i64, task_url: &str) -> String {
+    format!(
+        "Task queued: {task_id}. Track progress here: {task_url}.\n\n(If this is your first time, use your /admin password to open this link.)"
+    )
 }
 
 async fn admin_cron_get(State(state): State<AppState>) -> AppResult<Html<String>> {
@@ -2060,6 +2087,17 @@ async fn slack_events(
                 }
             };
 
+            if !is_proactive {
+                let task_url = task_trace_url(&state, _task_id);
+                let task_msg = task_link_message(_task_id, &task_url);
+                if let Ok(Some(token)) = crate::secrets::load_slack_bot_token_opt(&state).await {
+                    let slack = SlackClient::new(state.http.clone(), token);
+                    let _ = slack
+                        .post_message(&channel, thread_opt(&thread_ts), task_msg.as_str())
+                        .await;
+                }
+            }
+
             // Wake the worker immediately (avoid visible "queueing" latency).
             state.task_notify.notify_waiters();
 
@@ -2423,6 +2461,13 @@ async fn telegram_webhook(
         }
     };
 
+    let task_url = task_trace_url(&state, _task_id);
+    let task_msg = task_link_message(_task_id, &task_url);
+    let tg = crate::telegram::TelegramClient::new(state.http.clone(), token);
+    let _ = tg
+        .send_message(&stored.chat_id, Some(msg.message_id), task_msg.as_str())
+        .await;
+
     // Wake the worker immediately (avoid visible "queueing" latency).
     state.task_notify.notify_waiters();
 
@@ -2666,8 +2711,8 @@ pub async fn run_github_device_login_flow(
         .build()
         .context("build reqwest client")?;
 
-    let deadline = tokio::time::Instant::now()
-        + Duration::from_secs(expires_in_sec.max(60).min(60 * 30) + 60);
+    let deadline =
+        tokio::time::Instant::now() + Duration::from_secs(expires_in_sec.max(60).min(60 * 30) + 60);
     let mut interval = interval_sec.max(1).min(30);
 
     loop {

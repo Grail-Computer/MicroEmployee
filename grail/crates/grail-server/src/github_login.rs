@@ -115,7 +115,10 @@ pub async fn poll_for_token(
         anyhow::bail!("github device token poll failed: http {}", resp.status());
     }
 
-    let body: Resp = resp.json().await.context("github device token poll decode")?;
+    let body: Resp = resp
+        .json()
+        .await
+        .context("github device token poll decode")?;
 
     if let Some(token) = body.access_token {
         // token_type + scope are currently unused, but kept in the response struct for debugging.
@@ -137,4 +140,3 @@ pub async fn poll_for_token(
         }),
     }
 }
-

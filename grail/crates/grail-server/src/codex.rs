@@ -2,11 +2,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Context;
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
@@ -15,6 +17,14 @@ use crate::models::{PermissionsMode, Settings, Task};
 #[derive(Debug, Clone)]
 pub struct CodexTurnOutput {
     pub agent_message_text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CodexTurnEvent {
+    pub event_type: String,
+    pub level: String,
+    pub message: String,
+    pub details: String,
 }
 
 #[derive(Debug)]
@@ -240,6 +250,7 @@ impl CodexManager {
         cwd: &Path,
         input_text: &str,
         output_schema: serde_json::Value,
+        trace_tx: Option<&mpsc::UnboundedSender<CodexTurnEvent>>,
     ) -> anyhow::Result<CodexTurnOutput> {
         let Some(proc) = self.proc.as_mut() else {
             anyhow::bail!("codex app-server not started");
@@ -289,8 +300,52 @@ impl CodexManager {
         let mut agent_message_final: Option<String> = None;
         let mut last_turn_error: Option<String> = None;
         let mut file_change_paths_by_item: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        let mut last_cancel_check = Instant::now();
+
+        let emit_trace = |trace_tx: Option<&mpsc::UnboundedSender<CodexTurnEvent>>,
+                          event_type: &str,
+                          level: &str,
+                          message: &str,
+                          details: &str| {
+            if let Some(tx) = trace_tx {
+                let _ = tx.send(CodexTurnEvent {
+                    event_type: event_type.to_string(),
+                    level: level.to_string(),
+                    message: message.to_string(),
+                    details: details.to_string(),
+                });
+            }
+        };
+
+        emit_trace(
+            trace_tx,
+            "turn.start",
+            "info",
+            "turn-started",
+            &format!("thread={thread_id}"),
+        );
 
         loop {
+            if last_cancel_check.elapsed() >= std::time::Duration::from_millis(700) {
+                match crate::db::is_task_cancel_requested(&state.pool, task.id).await {
+                    Ok(true) => {
+                        emit_trace(
+                            trace_tx,
+                            "turn.interrupted",
+                            "warning",
+                            "task-cancel-requested",
+                            "admin requested cancellation",
+                        );
+                        anyhow::bail!("task cancelled by admin");
+                    }
+                    Ok(false) => {}
+                    Err(err) => {
+                        warn!(error = %err, task_id = task.id, "failed to check cancellation status");
+                    }
+                }
+                last_cancel_check = Instant::now();
+            }
+
             let msg = proc.read_next().await?;
 
             // Server-initiated requests (approvals).
@@ -301,6 +356,13 @@ impl CodexManager {
 
                 match method {
                     "item/commandExecution/requestApproval" => {
+                        emit_trace(
+                            trace_tx,
+                            "approval.request",
+                            "debug",
+                            "command execution approval requested",
+                            &method,
+                        );
                         let resp = crate::approvals::handle_command_execution_request(
                             state, settings, cwd, task, &params,
                         )
@@ -308,6 +370,13 @@ impl CodexManager {
                         proc.respond(id, resp).await?;
                     }
                     "item/fileChange/requestApproval" => {
+                        emit_trace(
+                            trace_tx,
+                            "approval.request",
+                            "debug",
+                            "file change approval requested",
+                            &method,
+                        );
                         // We intentionally disallow Codex-driven file edits; use context_writes in
                         // the structured Slack reply instead.
                         let _paths = params
@@ -320,6 +389,13 @@ impl CodexManager {
                     }
                     other => {
                         warn!(method = other, "unhandled server request; declining");
+                        emit_trace(
+                            trace_tx,
+                            "approval.request",
+                            "warning",
+                            "unhandled server request",
+                            other,
+                        );
                         // Best-effort: many server requests accept {"decision": "..."}.
                         proc.respond(id, json!({ "decision": "decline" })).await?;
                     }
@@ -335,6 +411,13 @@ impl CodexManager {
 
             match method {
                 "error" => {
+                    emit_trace(
+                        trace_tx,
+                        "turn.error",
+                        "error",
+                        "turn error",
+                        &params.to_string(),
+                    );
                     let p_thread_id = params
                         .get("threadId")
                         .and_then(|v| v.as_str())
@@ -360,6 +443,13 @@ impl CodexManager {
                     }
 
                     let item = params.get("item").cloned().unwrap_or(json!({}));
+                    emit_trace(
+                        trace_tx,
+                        "item.started",
+                        "debug",
+                        "item started",
+                        &item.to_string(),
+                    );
                     let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
                     if item_type == "agentMessage" {
                         if let Some(item_id) = item.get("id").and_then(|v| v.as_str()) {
@@ -387,8 +477,16 @@ impl CodexManager {
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
                     let p_turn_id = params.get("turnId").and_then(|v| v.as_str()).unwrap_or("");
+                    let item_id = params.get("itemId").and_then(|v| v.as_str()).unwrap_or("");
+                    let delta = params.get("delta").and_then(|v| v.as_str()).unwrap_or("");
+                    emit_trace(
+                        trace_tx,
+                        "agent.delta",
+                        "debug",
+                        "agent message delta",
+                        &delta,
+                    );
                     if p_thread_id == thread_id && p_turn_id == turn_id {
-                        let item_id = params.get("itemId").and_then(|v| v.as_str()).unwrap_or("");
                         if agent_message_item_id.is_none() && !item_id.is_empty() {
                             agent_message_item_id = Some(item_id.to_string());
                         }
@@ -397,11 +495,18 @@ impl CodexManager {
                                 continue;
                             }
                         }
-                        let delta = params.get("delta").and_then(|v| v.as_str()).unwrap_or("");
                         agent_message_deltas.push_str(delta);
                     }
                 }
                 "item/completed" => {
+                    let item = params.get("item").cloned().unwrap_or(json!({}));
+                    emit_trace(
+                        trace_tx,
+                        "item.completed",
+                        "debug",
+                        "item completed",
+                        &item.to_string(),
+                    );
                     let p_thread_id = params
                         .get("threadId")
                         .and_then(|v| v.as_str())
@@ -410,8 +515,6 @@ impl CodexManager {
                     if p_thread_id != thread_id || p_turn_id != turn_id {
                         continue;
                     }
-
-                    let item = params.get("item").cloned().unwrap_or(json!({}));
                     let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
                     if item_type == "agentMessage" {
                         if let Some(item_id) = item.get("id").and_then(|v| v.as_str()) {
@@ -428,6 +531,13 @@ impl CodexManager {
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
                     let p_turn = params.get("turn").cloned().unwrap_or(json!({}));
+                    emit_trace(
+                        trace_tx,
+                        "turn.completed",
+                        "info",
+                        "turn completed",
+                        &p_turn.to_string(),
+                    );
                     let p_turn_id = p_turn.get("id").and_then(|v| v.as_str()).unwrap_or("");
                     if p_thread_id != thread_id || p_turn_id != turn_id {
                         continue;

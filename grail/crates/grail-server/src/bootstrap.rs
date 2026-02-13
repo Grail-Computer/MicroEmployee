@@ -30,7 +30,10 @@ pub async fn ensure_defaults(data_dir: &Path) -> anyhow::Result<()> {
     }
 
     // Seed default skills for first-time installs.
-    let find_skills_dir = context_dir.join(".agents").join("skills").join("find-skills");
+    let find_skills_dir = context_dir
+        .join(".agents")
+        .join("skills")
+        .join("find-skills");
     tokio::fs::create_dir_all(&find_skills_dir)
         .await
         .with_context(|| format!("create {}", find_skills_dir.display()))?;

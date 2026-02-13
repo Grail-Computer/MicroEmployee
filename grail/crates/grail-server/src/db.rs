@@ -7,7 +7,7 @@ use sqlx::{Row, SqlitePool};
 
 use crate::models::{
     Approval, CodexDeviceLogin, CronJob, GithubDeviceLogin, GuardrailRule, ObservationalMemory,
-    PermissionsMode, Session, Settings, Task, TelegramMessage,
+    PermissionsMode, Session, Settings, Task, TaskTrace, TelegramMessage,
 };
 
 pub async fn init_sqlite(db_path: &Path) -> anyhow::Result<SqlitePool> {
@@ -1248,6 +1248,24 @@ pub async fn reset_running_tasks(pool: &SqlitePool) -> anyhow::Result<u64> {
 pub async fn cleanup_old_tasks(pool: &SqlitePool, max_age_days: i64) -> anyhow::Result<u64> {
     anyhow::ensure!(max_age_days >= 1, "max_age_days too small");
     let seconds = max_age_days.saturating_mul(86_400);
+    let traces_res = sqlx::query(
+        r#"
+        DELETE FROM task_traces
+        WHERE task_id IN (
+            SELECT id
+            FROM tasks
+            WHERE status IN ('succeeded', 'failed', 'cancelled')
+              AND created_at < unixepoch() - ?1
+        )
+        "#,
+    )
+    .bind(seconds)
+    .execute(pool)
+    .await
+    .context("cleanup old task traces")?;
+
+    let _ = traces_res.rows_affected();
+
     let res = sqlx::query(
         r#"
         DELETE FROM tasks
@@ -1673,16 +1691,189 @@ pub async fn complete_task_failure(
     Ok(())
 }
 
-pub async fn cancel_task(pool: &SqlitePool, task_id: i64) -> anyhow::Result<bool> {
+pub async fn complete_task_cancelled(pool: &SqlitePool, task_id: i64) -> anyhow::Result<bool> {
     let res = sqlx::query(
         r#"
         UPDATE tasks
         SET status = 'cancelled',
             error_text = 'cancelled by admin',
-            started_at = NULL,
             finished_at = unixepoch()
         WHERE id = ?1
-          AND status = 'queued'
+          AND status IN ('running', 'cancel_requested')
+        "#,
+    )
+    .bind(task_id)
+    .execute(pool)
+    .await
+    .context("complete task cancelled")?;
+    Ok(res.rows_affected() == 1)
+}
+
+pub async fn get_task(pool: &SqlitePool, task_id: i64) -> anyhow::Result<Option<Task>> {
+    let row_opt = sqlx::query(
+        r#"
+        SELECT
+          id,
+          status,
+          provider,
+          is_proactive,
+          workspace_id,
+          channel_id,
+          thread_ts,
+          conversation_key,
+          event_ts,
+          requested_by_user_id,
+          prompt_text,
+          files_json,
+          result_text,
+          error_text,
+          created_at,
+          started_at,
+          finished_at
+        FROM tasks
+        WHERE id = ?1
+        "#,
+    )
+    .bind(task_id)
+    .fetch_optional(pool)
+    .await
+    .context("get task")?;
+
+    Ok(row_opt.map(|row| Task {
+        id: row.get::<i64, _>("id"),
+        status: row.get::<String, _>("status"),
+        provider: row
+            .get::<Option<String>, _>("provider")
+            .unwrap_or_else(|| "slack".to_string()),
+        is_proactive: row.get::<i64, _>("is_proactive") != 0,
+        workspace_id: row.get::<String, _>("workspace_id"),
+        channel_id: row.get::<String, _>("channel_id"),
+        thread_ts: row.get::<String, _>("thread_ts"),
+        conversation_key: row.get::<String, _>("conversation_key"),
+        event_ts: row.get::<String, _>("event_ts"),
+        requested_by_user_id: row.get::<String, _>("requested_by_user_id"),
+        prompt_text: row.get::<String, _>("prompt_text"),
+        files_json: row.get::<String, _>("files_json"),
+        result_text: row.get::<Option<String>, _>("result_text"),
+        error_text: row.get::<Option<String>, _>("error_text"),
+        created_at: row.get::<i64, _>("created_at"),
+        started_at: row.get::<Option<i64>, _>("started_at"),
+        finished_at: row.get::<Option<i64>, _>("finished_at"),
+    }))
+}
+
+pub async fn get_task_status(pool: &SqlitePool, task_id: i64) -> anyhow::Result<Option<String>> {
+    let row = sqlx::query(
+        r#"
+        SELECT status
+        FROM tasks
+        WHERE id = ?1
+        "#,
+    )
+    .bind(task_id)
+    .fetch_optional(pool)
+    .await
+    .context("get task status")?;
+    Ok(row.map(|r| r.get::<String, _>("status")))
+}
+
+pub async fn is_task_cancel_requested(pool: &SqlitePool, task_id: i64) -> anyhow::Result<bool> {
+    let status = get_task_status(pool, task_id).await?;
+    Ok(matches!(
+        status.as_deref(),
+        Some("cancel_requested") | Some("cancelled")
+    ))
+}
+
+pub async fn list_task_traces(
+    pool: &SqlitePool,
+    task_id: i64,
+    limit: i64,
+) -> anyhow::Result<Vec<TaskTrace>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+          id,
+          task_id,
+          event_type,
+          level,
+          message,
+          details,
+          created_at
+        FROM task_traces
+        WHERE task_id = ?1
+        ORDER BY id ASC
+        LIMIT ?2
+        "#,
+    )
+    .bind(task_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .context("list task traces")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| TaskTrace {
+            id: row.get::<i64, _>("id"),
+            task_id: row.get::<i64, _>("task_id"),
+            event_type: row.get::<String, _>("event_type"),
+            level: row.get::<String, _>("level"),
+            message: row.get::<String, _>("message"),
+            details: row.get::<String, _>("details"),
+            created_at: row.get::<i64, _>("created_at"),
+        })
+        .collect())
+}
+
+pub async fn create_task_trace(
+    pool: &SqlitePool,
+    task_id: i64,
+    event_type: &str,
+    level: &str,
+    message: &str,
+    details: &str,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO task_traces (
+          task_id,
+          event_type,
+          level,
+          message,
+          details,
+          created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, unixepoch())
+        "#,
+    )
+    .bind(task_id)
+    .bind(event_type)
+    .bind(level)
+    .bind(message)
+    .bind(details)
+    .execute(pool)
+    .await
+    .context("insert task trace")?;
+    Ok(())
+}
+
+pub async fn cancel_task(pool: &SqlitePool, task_id: i64) -> anyhow::Result<bool> {
+    let res = sqlx::query(
+        r#"
+        UPDATE tasks
+        SET status = CASE
+            WHEN status = 'queued' THEN 'cancelled'
+            WHEN status = 'running' THEN 'cancel_requested'
+            ELSE status
+        END,
+            error_text = 'cancelled by admin',
+            finished_at = CASE
+                WHEN status = 'queued' THEN unixepoch()
+                ELSE finished_at
+            END
+        WHERE id = ?1
+          AND status IN ('queued', 'running')
         "#,
     )
     .bind(task_id)
