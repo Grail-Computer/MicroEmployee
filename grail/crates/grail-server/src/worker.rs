@@ -1213,6 +1213,7 @@ async fn process_task(
                     &browser,
                 );
             }
+            reply = rewrite_browser_login_refusal_if_needed(&task.prompt_text, reply, &browser);
             reply
         }
     } else if task.is_proactive {
@@ -2070,9 +2071,13 @@ fn build_turn_input(
         s.push_str(&format!("- CDP URL: {}\n", browser.cdp_url));
         s.push_str(&format!("- CDP port: {}\n", browser.cdp_port));
         s.push_str(&format!("- Profile: {}\n", browser.profile_name));
+        s.push_str("- You may use browser automation for third-party websites when requested.\n");
         s.push_str("- Never ask the user to send passwords, OTP codes, or secrets in chat.\n");
         if browser.novnc_enabled && !browser.novnc_url.is_empty() {
             s.push_str(&format!("- noVNC URL: {}\n", browser.novnc_url));
+            s.push_str(
+                "- If authentication is needed, do not refuse the task. Request manual handoff via noVNC.\n",
+            );
             s.push_str(
                 "If login is blocked by MFA/captcha, request a manual browser handoff by setting `browser_login_needed=true`.\n",
             );
@@ -2087,7 +2092,9 @@ fn build_turn_input(
         }
         s.push_str("- Do not apply side effects (context_writes/upload_files/cron_jobs/guardrail_rules) when `browser_login_needed=true`.\n\n");
     } else {
-        s.push_str("Browser automation is disabled.\n\n");
+        s.push_str("Browser automation is disabled.\n");
+        s.push_str("- If the user requests browser/login automation, say it is disabled in this deployment and ask an admin to set `GRAIL_BROWSER_ENABLED=1`.\n");
+        s.push_str("- For manual login handoff, an admin should also set `GRAIL_BROWSER_ENABLE_NOVNC=1` and a reachable `GRAIL_BROWSER_NOVNC_URL`.\n\n");
     }
 
     s.push_str("User request:\n");
@@ -2291,6 +2298,79 @@ fn compose_browser_login_reply(
     out.push('\n');
     out.push_str(&format!("- Instructions: {instructions}"));
 
+    out
+}
+
+fn prompt_looks_like_browser_login_request(prompt: &str) -> bool {
+    let p = prompt.to_lowercase();
+    [
+        "login",
+        "log in",
+        "sign in",
+        "authenticate",
+        "2fa",
+        "mfa",
+        "captcha",
+        "otp",
+        "password",
+    ]
+    .iter()
+    .any(|needle| p.contains(needle))
+}
+
+fn reply_looks_like_browser_login_refusal(reply: &str) -> bool {
+    let r = reply.to_lowercase();
+    [
+        "can't provide a live browser",
+        "cannot provide a live browser",
+        "can't provide live browser",
+        "cannot provide live browser",
+        "can't help perform a third-party login",
+        "cannot help perform a third-party login",
+        "can't help with a third-party login",
+        "cannot help with a third-party login",
+        "doesn't have browser automation enabled",
+        "does not have browser automation enabled",
+        "browser automation is not enabled",
+        "cannot log in on your behalf",
+        "can't log in on your behalf",
+    ]
+    .iter()
+    .any(|needle| r.contains(needle))
+}
+
+fn rewrite_browser_login_refusal_if_needed(
+    prompt_text: &str,
+    reply: String,
+    browser: &crate::codex::BrowserEnvConfig,
+) -> String {
+    if !prompt_looks_like_browser_login_request(prompt_text)
+        || !reply_looks_like_browser_login_refusal(&reply)
+    {
+        return reply;
+    }
+
+    if browser.enabled {
+        return compose_browser_login_reply(
+            String::new(),
+            None,
+            Some(
+                "Open the noVNC link, complete login/MFA in the browser window, then reply \"done\" so I can continue.",
+            ),
+            None,
+            browser,
+        );
+    }
+
+    let mut out = String::new();
+    out.push_str("Browser automation is currently disabled in this deployment.\n");
+    out.push_str("To enable login handoff with noVNC, configure and redeploy with:\n");
+    out.push_str("- `GRAIL_BROWSER_ENABLED=1`\n");
+    out.push_str("- `GRAIL_BROWSER_ENABLE_NOVNC=1`\n");
+    out.push_str("- `GRAIL_BROWSER_NOVNC_URL=<public noVNC URL>`\n");
+    out.push_str(
+        "Then retry this request and I can continue after you sign in in the browser window.",
+    );
     out
 }
 
