@@ -294,12 +294,35 @@
         border-color: var(--border-hover);
       }
 
+      .inline-form {
+        margin: 0;
+        display: inline-block;
+      }
+
+      .form-row {
+        margin-top: 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .inline-form button {
+        margin-top: 0;
+      }
+
       .btn-danger {
         color: var(--red);
       }
 
       .btn-danger:hover {
         background: var(--red-subtle);
+      }
+
+      button:disabled,
+      .btn:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
       }
 
       .btn-sm {

@@ -1,9 +1,6 @@
-<table>
-  <tr>
-    <td><img src="mascot.png" alt="FastClaw Mascot" width="128"></td>
-    <td><h1>FastClaw — AI Teammate</h1></td>
-  </tr>
-</table>
+![FastClaw](banner.png)
+
+# FastClaw — AI Teammate
 
 FastClaw is a single-tenant AI teammate platform you deploy as a service and connect to Slack and/or Telegram. The default in-chat agent name remains Grail.
 
