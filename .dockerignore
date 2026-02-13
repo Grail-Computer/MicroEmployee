@@ -11,3 +11,15 @@ data
 # Local Codex clone is for reference only and should never be shipped/built.
 codex
 
+# Large directories/files not used by the production Docker build context.
+.agent
+.agents
+assets
+banner.png
+mascot.png
+coworker
+guardrails
+nanobot
+openclaw
+frontend/node_modules
+frontend/dist
