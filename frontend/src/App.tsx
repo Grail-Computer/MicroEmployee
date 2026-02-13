@@ -19,6 +19,7 @@ export default function App() {
         <Route path="status" element={<StatusPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="tasks" element={<TasksPage />} />
+        <Route path="tasks/:id" element={<TasksPage />} />
         <Route path="cron" element={<CronPage />} />
         <Route path="guardrails" element={<GuardrailsPage />} />
         <Route path="approvals" element={<ApprovalsPage />} />

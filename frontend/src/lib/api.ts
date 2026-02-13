@@ -31,7 +31,8 @@ export const api = {
     request<{ ok: boolean }>(`/secrets/${key}`, { method: 'DELETE' }),
 
   // Tasks
-  getTasks: () => request<{ tasks: TaskData[] }>('/tasks'),
+  getTasks: () => request<{ tasks: TaskListItemData[] }>('/tasks'),
+  getTask: (id: number) => request<{ task: TaskData; traces: TaskTraceData[] }>(`/tasks/${id}`),
   cancelTask: (id: number) => request<{ ok: boolean }>(`/tasks/${id}/cancel`, { method: 'POST' }),
   retryTask: (id: number) => request<{ ok: boolean }>(`/tasks/${id}/retry`, { method: 'POST' }),
 
@@ -139,7 +140,7 @@ export interface SettingsData {
   brave_search_api_key_set: boolean;
 }
 
-export interface TaskData {
+export interface TaskListItemData {
   id: number;
   status: string;
   provider: string;
@@ -149,6 +150,25 @@ export interface TaskData {
   prompt_text: string;
   result_text: string;
   error_text: string;
+  created_at: string;
+  started_at: string;
+  finished_at: string;
+}
+
+export interface TaskData extends TaskListItemData {
+  workspace_id: string;
+  conversation_key: string;
+  event_ts: string;
+  requested_by_user_id: string;
+  files_json: string;
+}
+
+export interface TaskTraceData {
+  id: number;
+  event_type: string;
+  level: string;
+  message: string;
+  details: string;
   created_at: string;
 }
 
