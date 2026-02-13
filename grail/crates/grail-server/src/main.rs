@@ -32,6 +32,8 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, get_service, post};
 use axum::Router;
 use clap::Parser;
+use once_cell::sync::Lazy;
+use regex::Regex;
 use serde::Deserialize;
 use sqlx::{Row, SqlitePool};
 use tokio::sync::RwLock;
@@ -487,6 +489,47 @@ mod tests {
         );
         assert_eq!(host_from_url("null"), None);
     }
+
+    #[test]
+    fn parse_task_command_list_running() {
+        assert_eq!(
+            parse_task_command("running tasks"),
+            Some(TaskCommand::ListRunning)
+        );
+        assert_eq!(
+            parse_task_command("What tasks are running?"),
+            Some(TaskCommand::ListRunning)
+        );
+    }
+
+    #[test]
+    fn parse_task_command_show() {
+        assert_eq!(
+            parse_task_command("tell me about task 50"),
+            Some(TaskCommand::Show { task_id: 50 })
+        );
+        assert_eq!(
+            parse_task_command("task #51"),
+            Some(TaskCommand::Show { task_id: 51 })
+        );
+    }
+
+    #[test]
+    fn parse_task_command_cancel_and_retry() {
+        assert_eq!(
+            parse_task_command("stop task 52"),
+            Some(TaskCommand::Cancel { task_id: 52 })
+        );
+        assert_eq!(
+            parse_task_command("retry task #53"),
+            Some(TaskCommand::Retry { task_id: 53 })
+        );
+    }
+
+    #[test]
+    fn parse_task_command_does_not_match_approval() {
+        assert_eq!(parse_task_command("cancel appr_123"), None);
+    }
 }
 
 async fn slack_events(
@@ -630,6 +673,13 @@ async fn slack_events(
             match db::get_settings(&state.pool).await {
                 Ok(settings) => {
                     if is_proactive && !settings.slack_proactive_enabled {
+                        warn!(
+                            workspace_id = %team_id,
+                            channel_id = %channel,
+                            user_id = %user,
+                            reason = "proactive mode is disabled",
+                            "ignored proactive slack message"
+                        );
                         if let Err(err) = db::enqueue_ignored_task(
                             &state.pool,
                             "slack",
@@ -658,6 +708,13 @@ async fn slack_events(
                         if want != team_id {
                             warn!(want, got = %team_id, "ignoring slack event from unexpected workspace");
                             if is_proactive {
+                                warn!(
+                                    workspace_id = %team_id,
+                                    channel_id = %channel,
+                                    user_id = %user,
+                                    reason = "workspace id mismatch",
+                                    "ignored proactive slack message"
+                                );
                                 if let Err(err) = db::enqueue_ignored_task(
                                     &state.pool,
                                     "slack",
@@ -687,6 +744,13 @@ async fn slack_events(
                     if !allowed.is_empty() && !allowed.contains(user.as_str()) {
                         warn!(user = %user, "slack user not in allow list; ignoring");
                         if is_proactive {
+                            warn!(
+                                workspace_id = %team_id,
+                                channel_id = %channel,
+                                user_id = %user,
+                                reason = "user not in allow list",
+                                "ignored proactive slack message"
+                            );
                             if let Err(err) = db::enqueue_ignored_task(
                                 &state.pool,
                                 "slack",
@@ -725,6 +789,13 @@ async fn slack_events(
                         if !channels.is_empty() && !channels.contains(channel.as_str()) {
                             warn!(channel = %channel, "slack channel not in allow list; ignoring");
                             if is_proactive {
+                                warn!(
+                                    workspace_id = %team_id,
+                                    channel_id = %channel,
+                                    user_id = %user,
+                                    reason = "channel not in allow list",
+                                    "ignored proactive slack message"
+                                );
                                 if let Err(err) = db::enqueue_ignored_task(
                                     &state.pool,
                                     "slack",
@@ -761,6 +832,13 @@ async fn slack_events(
                 Err(err) => {
                     warn!(error = %err, "failed to load settings for slack authz");
                     if is_proactive {
+                        warn!(
+                            workspace_id = %team_id,
+                            channel_id = %channel,
+                            user_id = %user,
+                            reason = "settings load failed",
+                            "ignored proactive slack message"
+                        );
                         if let Err(err) = db::enqueue_ignored_task(
                             &state.pool,
                             "slack",
@@ -790,6 +868,13 @@ async fn slack_events(
                         Ok(Some(bot_user_id)) => {
                             let needle = format!("<@{}", bot_user_id);
                             if text.contains(&needle) {
+                                warn!(
+                                    workspace_id = %team_id,
+                                    channel_id = %channel,
+                                    user_id = %user,
+                                    reason = "message directly mentioned the bot",
+                                    "ignored proactive slack message"
+                                );
                                 if let Err(err) = db::enqueue_ignored_task(
                                     &state.pool,
                                     "slack",
@@ -827,6 +912,25 @@ async fn slack_events(
             );
 
             if allow_approval_commands {
+                if let Some(cmd) = parse_task_command(&prompt) {
+                    let response = match handle_task_command(&state, cmd).await {
+                        Ok(msg) => msg,
+                        Err(err) => {
+                            warn!(error = %err, "failed to handle task command");
+                            "I couldn't process that task command right now.".to_string()
+                        }
+                    };
+                    let response = redact_user_message(&response);
+                    if let Ok(Some(token)) = crate::secrets::load_slack_bot_token_opt(&state).await
+                    {
+                        let slack = SlackClient::new(state.http.clone(), token);
+                        let _ = slack
+                            .post_message(&channel, thread_opt(&thread_ts), response.trim())
+                            .await;
+                    }
+                    return (StatusCode::OK, "").into_response();
+                }
+
                 if let Some((action, approval_id)) = parse_approval_command(&prompt) {
                     match crate::approvals::handle_approval_command(&state, action, &approval_id)
                         .await
@@ -925,6 +1029,18 @@ async fn slack_events(
                     return (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response();
                 }
             };
+
+            if is_proactive {
+                info!(
+                    task_id = _task_id,
+                    workspace_id = %team_id,
+                    channel_id = %channel,
+                    thread_ts = %thread_ts,
+                    event_ts = %ts,
+                    requested_by = %user,
+                    "enqueued proactive slack task"
+                );
+            }
 
             if !is_proactive {
                 let task_url = task_trace_url(&state, _task_id);
@@ -1281,6 +1397,22 @@ async fn telegram_webhook(
         return (StatusCode::OK, "").into_response();
     }
 
+    if let Some(cmd) = parse_task_command(&prompt) {
+        let response = match handle_task_command(&state, cmd).await {
+            Ok(msg) => msg,
+            Err(err) => {
+                warn!(error = %err, "failed to handle telegram task command");
+                "I couldn't process that task command right now.".to_string()
+            }
+        };
+        let response = redact_user_message(&response);
+        let tg = crate::telegram::TelegramClient::new(state.http.clone(), token.clone());
+        let _ = tg
+            .send_message(&stored.chat_id, Some(msg.message_id), response.trim())
+            .await;
+        return (StatusCode::OK, "").into_response();
+    }
+
     let _task_id = match db::enqueue_task(
         &state.pool,
         "telegram",
@@ -1411,6 +1543,231 @@ fn parse_urlencoded_form(body: &Bytes) -> HashMap<String, String> {
         out.insert(decode(k), decode(v));
     }
     out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskCommand {
+    ListRunning,
+    Show { task_id: i64 },
+    Cancel { task_id: i64 },
+    Retry { task_id: i64 },
+}
+
+fn parse_task_command(text: &str) -> Option<TaskCommand> {
+    let t = text
+        .trim()
+        .trim_end_matches(|c: char| c == '?' || c == '!' || c == '.')
+        .to_ascii_lowercase();
+    if t.is_empty() {
+        return None;
+    }
+
+    if matches!(
+        t.as_str(),
+        "tasks"
+            | "list tasks"
+            | "running tasks"
+            | "active tasks"
+            | "show tasks"
+            | "show running tasks"
+            | "show active tasks"
+            | "what's running"
+            | "what is running"
+            | "what tasks are running"
+            | "what task is running"
+            | "which tasks are running"
+    ) {
+        return Some(TaskCommand::ListRunning);
+    }
+
+    static TASK_ID_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\btask(?:\s+id)?\s*#?\s*(\d+)\b")
+            .expect("task command task id regex must compile")
+    });
+    static TASK_RETRY_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\b(?:retry|rerun|re-run)\b")
+            .expect("task command retry regex must compile")
+    });
+    static TASK_CANCEL_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\b(?:stop|cancel|abort|kill)\b")
+            .expect("task command cancel regex must compile")
+    });
+
+    let task_id = TASK_ID_RE
+        .captures(&t)
+        .and_then(|caps| caps.get(1))
+        .and_then(|m| i64::from_str(m.as_str()).ok())
+        .filter(|id| *id > 0)?;
+
+    if TASK_RETRY_RE.is_match(&t) {
+        return Some(TaskCommand::Retry { task_id });
+    }
+
+    if TASK_CANCEL_RE.is_match(&t) {
+        return Some(TaskCommand::Cancel { task_id });
+    }
+
+    Some(TaskCommand::Show { task_id })
+}
+
+fn format_unix_ts(ts: i64) -> String {
+    match chrono::DateTime::<chrono::Utc>::from_timestamp(ts, 0) {
+        Some(dt) => dt.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+        None => ts.to_string(),
+    }
+}
+
+fn format_unix_ts_opt(ts: Option<i64>) -> String {
+    ts.map(format_unix_ts).unwrap_or_else(|| "n/a".to_string())
+}
+
+fn truncate_preview(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let mut out: String = trimmed.chars().take(max_chars).collect();
+    if trimmed.chars().count() > max_chars {
+        out.push('…');
+    }
+    out.replace('\n', " ")
+}
+
+fn redact_user_message(text: &str) -> String {
+    let (redacted, was_redacted) = crate::secrets::redact_secrets(text);
+    if was_redacted {
+        warn!("redacted secrets from task command response");
+    }
+    redacted
+}
+
+async fn handle_task_command(state: &AppState, cmd: TaskCommand) -> anyhow::Result<String> {
+    match cmd {
+        TaskCommand::ListRunning => {
+            let active = db::list_active_tasks(&state.pool, 20).await?;
+            let queued: i64 =
+                sqlx::query("SELECT COUNT(*) AS c FROM tasks WHERE status = 'queued'")
+                    .fetch_one(&state.pool)
+                    .await?
+                    .get("c");
+
+            if active.is_empty() {
+                return Ok(format!(
+                    "No tasks are currently running. Queue depth: {queued}."
+                ));
+            }
+
+            let mut lines: Vec<String> = Vec::new();
+            for (task_id, started_at) in active {
+                if let Some(task) = db::get_task(&state.pool, task_id).await? {
+                    lines.push(format!(
+                        "- #{task_id}: {} via {} (started {})",
+                        task.status,
+                        task.provider,
+                        format_unix_ts(started_at),
+                    ));
+                } else {
+                    lines.push(format!(
+                        "- #{task_id}: running (started {})",
+                        format_unix_ts(started_at),
+                    ));
+                }
+            }
+
+            Ok(format!(
+                "Running tasks:\n{}\nQueue depth: {queued}\nUse `task <id>`, `stop task <id>`, or `retry task <id>`.",
+                lines.join("\n")
+            ))
+        }
+        TaskCommand::Show { task_id } => {
+            let Some(task) = db::get_task(&state.pool, task_id).await? else {
+                return Ok(format!("Task #{task_id} was not found."));
+            };
+
+            let mut msg = format!(
+                "Task #{}\nStatus: {}\nProvider: {}\nCreated: {}\nStarted: {}\nFinished: {}\nLink: {}",
+                task.id,
+                task.status,
+                task.provider,
+                format_unix_ts(task.created_at),
+                format_unix_ts_opt(task.started_at),
+                format_unix_ts_opt(task.finished_at),
+                task_trace_url(state, task.id),
+            );
+            if let Some(err) = task.error_text.as_deref() {
+                let preview = truncate_preview(err, 240);
+                if !preview.is_empty() {
+                    msg.push_str(&format!("\nError: {preview}"));
+                }
+            }
+            if let Some(result) = task.result_text.as_deref() {
+                let preview = truncate_preview(result, 240);
+                if !preview.is_empty() {
+                    msg.push_str(&format!("\nResult preview: {preview}"));
+                }
+            }
+            Ok(msg)
+        }
+        TaskCommand::Cancel { task_id } => {
+            let Some(task) = db::get_task(&state.pool, task_id).await? else {
+                return Ok(format!("Task #{task_id} was not found."));
+            };
+
+            if !matches!(task.status.as_str(), "queued" | "running") {
+                return Ok(format!(
+                    "Task #{task_id} is `{}` and cannot be stopped. Only `queued` and `running` tasks can be stopped.",
+                    task.status
+                ));
+            }
+
+            if db::cancel_task(&state.pool, task_id).await? {
+                let next_status = if task.status == "queued" {
+                    "cancelled"
+                } else {
+                    "cancel_requested"
+                };
+                return Ok(format!(
+                    "Task #{task_id} updated: `{}` -> `{next_status}`.\nLink: {}",
+                    task.status,
+                    task_trace_url(state, task_id),
+                ));
+            }
+
+            let current = db::get_task_status(&state.pool, task_id)
+                .await?
+                .unwrap_or_else(|| "missing".to_string());
+            Ok(format!(
+                "Task #{task_id} could not be stopped because its status is now `{current}`."
+            ))
+        }
+        TaskCommand::Retry { task_id } => {
+            let Some(task) = db::get_task(&state.pool, task_id).await? else {
+                return Ok(format!("Task #{task_id} was not found."));
+            };
+
+            if !matches!(task.status.as_str(), "failed" | "cancelled") {
+                return Ok(format!(
+                    "Task #{task_id} is `{}` and cannot be retried. Only `failed` or `cancelled` tasks can be retried.",
+                    task.status
+                ));
+            }
+
+            if db::retry_task(&state.pool, task_id).await? {
+                state.task_notify.notify_waiters();
+                return Ok(format!(
+                    "Task #{task_id} has been re-queued.\nLink: {}",
+                    task_trace_url(state, task_id),
+                ));
+            }
+
+            let current = db::get_task_status(&state.pool, task_id)
+                .await?
+                .unwrap_or_else(|| "missing".to_string());
+            Ok(format!(
+                "Task #{task_id} could not be retried because its status is now `{current}`."
+            ))
+        }
+    }
 }
 
 fn parse_approval_command(text: &str) -> Option<(&'static str, String)> {
@@ -2005,6 +2362,80 @@ async fn whatsapp_webhook(
                     continue;
                 }
 
+                if let Some(cmd) = parse_task_command(&prompt) {
+                    let response = match handle_task_command(&state, cmd).await {
+                        Ok(msg) => msg,
+                        Err(err) => {
+                            warn!(error = %err, "failed to handle whatsapp task command");
+                            "I couldn't process that task command right now.".to_string()
+                        }
+                    };
+                    let response = redact_user_message(&response);
+
+                    let access_token = match crate::secrets::load_whatsapp_access_token_opt(&state)
+                        .await
+                    {
+                        Ok(Some(v)) => v,
+                        Ok(None) => {
+                            warn!("WHATSAPP_ACCESS_TOKEN missing for command response");
+                            let _ = db::unmark_event_processed(&state.pool, wid, &event_id).await;
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "whatsapp access token missing",
+                            )
+                                .into_response();
+                        }
+                        Err(err) => {
+                            warn!(error = %err, "failed to load WHATSAPP_ACCESS_TOKEN");
+                            let _ = db::unmark_event_processed(&state.pool, wid, &event_id).await;
+                            return (StatusCode::INTERNAL_SERVER_ERROR, "secret error")
+                                .into_response();
+                        }
+                    };
+                    let phone_id = match crate::secrets::load_whatsapp_phone_number_id_opt(&state)
+                        .await
+                    {
+                        Ok(Some(v)) => v,
+                        Ok(None) => {
+                            warn!("WHATSAPP_PHONE_NUMBER_ID missing for command response");
+                            let _ = db::unmark_event_processed(&state.pool, wid, &event_id).await;
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "whatsapp phone id missing",
+                            )
+                                .into_response();
+                        }
+                        Err(err) => {
+                            warn!(error = %err, "failed to load WHATSAPP_PHONE_NUMBER_ID");
+                            let _ = db::unmark_event_processed(&state.pool, wid, &event_id).await;
+                            return (StatusCode::INTERNAL_SERVER_ERROR, "secret error")
+                                .into_response();
+                        }
+                    };
+
+                    let wa = crate::whatsapp::WhatsAppClient::new(
+                        state.http.clone(),
+                        access_token,
+                        phone_id,
+                    );
+                    if let Err(err) = wa.send_message(from, response.trim()).await {
+                        error!(
+                            error = %err,
+                            from = %from,
+                            message_id = %msg.id,
+                            "failed to send whatsapp task command response"
+                        );
+                        let _ = db::unmark_event_processed(&state.pool, wid, &event_id).await;
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "failed to send command response",
+                        )
+                            .into_response();
+                    }
+
+                    continue;
+                }
+
                 // channel_id = sender phone number (used to reply back).
                 if let Err(err) = db::enqueue_task(
                     &state.pool,
@@ -2152,6 +2583,22 @@ async fn discord_webhook(
             }
         }
 
+        if let Some(cmd) = parse_task_command(&prompt) {
+            let response = match handle_task_command(&state, cmd).await {
+                Ok(msg) => msg,
+                Err(err) => {
+                    warn!(error = %err, "failed to handle discord task command");
+                    "I couldn't process that task command right now.".to_string()
+                }
+            };
+            let response = redact_user_message(&response);
+            let resp = serde_json::json!({
+                "type": 4,
+                "data": { "content": response }
+            });
+            return axum::response::Json(resp).into_response();
+        }
+
         if !prompt.is_empty() {
             if let Err(err) = db::enqueue_task(
                 &state.pool,
@@ -2285,6 +2732,64 @@ async fn msteams_webhook(
 
     let prompt = clamp_chars(text, 4_000);
     if prompt.is_empty() {
+        return (StatusCode::OK, "").into_response();
+    }
+
+    if let Some(cmd) = parse_task_command(&prompt) {
+        let response = match handle_task_command(&state, cmd).await {
+            Ok(msg) => msg,
+            Err(err) => {
+                warn!(error = %err, "failed to handle teams task command");
+                "I couldn't process that task command right now.".to_string()
+            }
+        };
+        let response = redact_user_message(&response);
+
+        let app_password = match crate::secrets::load_msteams_app_password_opt(&state).await {
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                warn!("MSTEAMS_APP_PASSWORD missing for command response");
+                let _ = db::unmark_event_processed(&state.pool, "msteams", &event_id).await;
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "teams app password missing",
+                )
+                    .into_response();
+            }
+            Err(err) => {
+                warn!(error = %err, "failed to load teams app password");
+                let _ = db::unmark_event_processed(&state.pool, "msteams", &event_id).await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, "secret error").into_response();
+            }
+        };
+
+        let teams =
+            crate::msteams::TeamsClient::new(state.http.clone(), app_id.clone(), app_password);
+        let send_result = if !activity_id.trim().is_empty() {
+            teams
+                .reply_to_activity(service_url, conversation_id, activity_id, response.trim())
+                .await
+        } else {
+            teams
+                .send_message(service_url, conversation_id, response.trim())
+                .await
+        };
+
+        if let Err(err) = send_result {
+            error!(
+                error = %err,
+                activity_id = %activity_id,
+                from_id = %from_id,
+                "failed to send teams task command response"
+            );
+            let _ = db::unmark_event_processed(&state.pool, "msteams", &event_id).await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to send command response",
+            )
+                .into_response();
+        }
+
         return (StatusCode::OK, "").into_response();
     }
 

@@ -114,6 +114,21 @@ docker run -p 3000:3000 --env-file .env grail
 
 `GET /healthz` — returns 200 when the server is ready.
 
+### Mandatory post-change checks
+
+After **every** code change in this repo, run these commands before handing work back:
+
+```bash
+cd grail
+cargo fmt
+cargo build
+```
+
+Rules:
+- Do not skip these checks, even for small changes.
+- If either command fails, fix the issue before considering the task complete.
+- If a failure cannot be resolved immediately, report the exact error and blocker.
+
 ---
 
 ## Architecture Overview
