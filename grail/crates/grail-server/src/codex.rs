@@ -9,7 +9,7 @@ use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
 use crate::models::{PermissionsMode, Settings, Task};
@@ -54,8 +54,7 @@ impl BrowserEnvConfig {
             "6080",
         );
         let cdp_url_default = format!("http://127.0.0.1:{cdp_port}");
-        let novnc_url_default =
-            format!("http://127.0.0.1:{novnc_port}/vnc.html?autoconnect=1&resize=remote");
+        let novnc_url_default = derive_novnc_url_default(&novnc_port);
 
         Self {
             enabled,
@@ -98,6 +97,34 @@ fn env_first_value(primary: &str, fallback: &str) -> Option<String> {
         .or_else(|| std::env::var(fallback).ok())
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
+}
+
+fn derive_novnc_url_default(novnc_port: &str) -> String {
+    let local = format!("http://127.0.0.1:{novnc_port}/vnc.html?autoconnect=1&resize=remote");
+
+    if let Ok(base_url) = std::env::var("BASE_URL") {
+        let base = base_url.trim();
+        if base.starts_with("http://") || base.starts_with("https://") {
+            return format!(
+                "{}/vnc.html?autoconnect=1&resize=remote",
+                base.trim_end_matches('/')
+            );
+        }
+    }
+
+    if let Ok(public_domain) = std::env::var("RAILWAY_PUBLIC_DOMAIN") {
+        let domain = public_domain.trim();
+        if !domain.is_empty() {
+            let normalized = domain
+                .trim_start_matches("https://")
+                .trim_start_matches("http://");
+            if !normalized.is_empty() {
+                return format!("https://{normalized}/vnc.html?autoconnect=1&resize=remote");
+            }
+        }
+    }
+
+    local
 }
 
 fn normalize_port(value: Option<String>, default: &str) -> String {
@@ -820,6 +847,19 @@ async fn spawn_codex_with_args(
     let mut cmd = Command::new(codex_bin);
     cmd.args(args);
     cmd.env("CODEX_HOME", codex_home);
+    let codex_rust_log = std::env::var("GRAIL_CODEX_RUST_LOG")
+        .ok()
+        .or_else(|| std::env::var("CODEX_RUST_LOG").ok())
+        .unwrap_or_else(|| "warn".to_string());
+    let codex_rust_log = codex_rust_log.trim();
+    if !codex_rust_log.is_empty() {
+        cmd.env("RUST_LOG", codex_rust_log);
+    }
+    // Force plain stderr so hosted log aggregators don't show raw escape codes.
+    cmd.env("NO_COLOR", "1");
+    cmd.env("CLICOLOR", "0");
+    cmd.env("CLICOLOR_FORCE", "0");
+    cmd.env("RUST_LOG_STYLE", "never");
     if let Some(key) = openai_api_key {
         cmd.env("OPENAI_API_KEY", key);
     }
@@ -920,6 +960,8 @@ async fn spawn_codex_with_args(
 }
 
 fn spawn_stderr_logger(stderr: ChildStderr) {
+    let verbose = env_bool("GRAIL_CODEX_STDERR_VERBOSE");
+    let include_info = verbose || env_bool("GRAIL_CODEX_STDERR_INFO");
     tokio::spawn(async move {
         let mut reader = BufReader::new(stderr);
         let mut line = String::new();
@@ -928,15 +970,119 @@ fn spawn_stderr_logger(stderr: ChildStderr) {
             match reader.read_line(&mut line).await {
                 Ok(0) => break,
                 Ok(_) => {
-                    let s = line.trim_end();
-                    if !s.is_empty() {
-                        warn!(target: "codex_stderr", "{s}");
+                    let raw = line.trim_end();
+                    if raw.is_empty() {
+                        continue;
+                    }
+                    let cleaned = strip_ansi_escape_codes(raw);
+                    let s = cleaned.trim();
+                    if s.is_empty() {
+                        continue;
+                    }
+                    match classify_codex_stderr_line(s, include_info, verbose) {
+                        CodexStderrLine::Drop => {}
+                        CodexStderrLine::Debug => debug!(target: "codex_stderr", "{s}"),
+                        CodexStderrLine::Warn => warn!(target: "codex_stderr", "{s}"),
+                        CodexStderrLine::Error => error!(target: "codex_stderr", "{s}"),
                     }
                 }
                 Err(_) => break,
             }
         }
     });
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CodexStderrLine {
+    Drop,
+    Debug,
+    Warn,
+    Error,
+}
+
+fn classify_codex_stderr_line(line: &str, include_info: bool, verbose: bool) -> CodexStderrLine {
+    if !verbose && is_codex_stderr_noise(line) {
+        return CodexStderrLine::Drop;
+    }
+    if is_error_line(line) {
+        return CodexStderrLine::Error;
+    }
+    if is_warn_line(line) {
+        return CodexStderrLine::Warn;
+    }
+    if is_info_debug_trace_line(line) {
+        if include_info {
+            return CodexStderrLine::Debug;
+        }
+        return CodexStderrLine::Drop;
+    }
+    // Unknown stderr content is kept as warning so non-structured failures stay visible.
+    CodexStderrLine::Warn
+}
+
+fn is_codex_stderr_noise(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    let is_sse_delta = lower.contains("codex_otel::traces::otel_manager")
+        && lower.contains("response.output_text.delta");
+    let is_session_enter_exit = lower.contains("session_loop")
+        && lower.contains("codex_core::codex")
+        && (lower.contains(": enter") || lower.contains(": exit"));
+    is_sse_delta || is_session_enter_exit
+}
+
+fn is_error_line(line: &str) -> bool {
+    has_level_token(line, "error") || line.to_ascii_lowercase().contains("error:")
+}
+
+fn is_warn_line(line: &str) -> bool {
+    has_level_token(line, "warn") || line.to_ascii_lowercase().contains("warning:")
+}
+
+fn is_info_debug_trace_line(line: &str) -> bool {
+    has_level_token(line, "info")
+        || has_level_token(line, "debug")
+        || has_level_token(line, "trace")
+}
+
+fn has_level_token(line: &str, level: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains(&format!(" {level} ")) || lower.starts_with(&format!("{level} "))
+}
+
+fn strip_ansi_escape_codes(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            out.push(ch);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some('[') => {
+                let _ = chars.next();
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                let _ = chars.next();
+                let mut prev_was_esc = false;
+                for c in chars.by_ref() {
+                    if c == '\u{7}' {
+                        break;
+                    }
+                    if prev_was_esc && c == '\\' {
+                        break;
+                    }
+                    prev_was_esc = c == '\u{1b}';
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 impl CodexProc {
