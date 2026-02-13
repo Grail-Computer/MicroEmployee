@@ -17,6 +17,7 @@ interface TranscriptMessage {
 
 const MAX_TRACE_DETAIL_CHARS = 5000;
 const MAX_COMMAND_OUTPUT_CHARS = 7000;
+const STATUS_FILTER_ORDER = ['running', 'queued', 'succeeded', 'failed', 'cancelled'] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -124,6 +125,14 @@ function roleGlyph(role: TranscriptRole): string {
   return 'S';
 }
 
+function formatStatusLabel(status: string): string {
+  return status
+    .split('_')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
 export function TasksPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -136,6 +145,7 @@ export function TasksPage() {
   const [tasks, setTasks] = useState<TaskListItemData[]>([]);
   const [detailTask, setDetailTask] = useState<TaskData | null>(null);
   const [traces, setTraces] = useState<TaskTraceData[]>([]);
+  const [statusFilter, setStatusFilter] = useState('all');
   const [listError, setListError] = useState('');
   const [detailError, setDetailError] = useState('');
 
@@ -203,6 +213,39 @@ export function TasksPage() {
     return () => clearInterval(timer);
   }, [selectedTaskId]);
 
+  const filterOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const task of tasks) {
+      counts.set(task.status, (counts.get(task.status) ?? 0) + 1);
+    }
+
+    const discoveredStatuses = Array.from(counts.keys()).sort((a, b) => a.localeCompare(b));
+    const orderedStatuses = [
+      ...STATUS_FILTER_ORDER.filter((status) => counts.has(status)),
+      ...discoveredStatuses.filter((status) => !STATUS_FILTER_ORDER.includes(status as (typeof STATUS_FILTER_ORDER)[number])),
+    ];
+
+    return [
+      { value: 'all', label: 'All', count: tasks.length },
+      ...orderedStatuses.map((status) => ({
+        value: status,
+        label: formatStatusLabel(status),
+        count: counts.get(status) ?? 0,
+      })),
+    ];
+  }, [tasks]);
+
+  useEffect(() => {
+    if (statusFilter !== 'all' && !tasks.some((task) => task.status === statusFilter)) {
+      setStatusFilter('all');
+    }
+  }, [statusFilter, tasks]);
+
+  const visibleTasks = useMemo(
+    () => (statusFilter === 'all' ? tasks : tasks.filter((task) => task.status === statusFilter)),
+    [statusFilter, tasks],
+  );
+
   const stopTask = (taskId: number) => {
     void api
       .cancelTask(taskId)
@@ -264,23 +307,42 @@ export function TasksPage() {
       <h2>Task Queue</h2>
       <p className="section-desc">Choose a task to inspect its full execution trace and lifecycle events.</p>
 
+      <div className="tasks-toolbar">
+        <div className="segmented-control" role="tablist" aria-label="Filter tasks by status">
+          {filterOptions.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              role="tab"
+              aria-selected={statusFilter === option.value}
+              className={`segment-btn ${statusFilter === option.value ? 'active' : ''}`}
+              onClick={() => setStatusFilter(option.value)}
+            >
+              <span>{option.label}</span>
+              <span className="segment-count">{option.count}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="tasks-layout">
         <section className="tasks-sidebar card">
-          <div className="card-title">Queued Tasks</div>
+          <div className="card-title">Tasks</div>
           <div className="tasks-sidebar-inner">
-            {tasks.map((task) => (
+            {visibleTasks.map((task) => (
               <Link
                 key={task.id}
                 className={`task-item ${task.id === selectedTaskId ? 'active' : ''}`}
                 to={`/tasks/${task.id}`}
               >
-                <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-tertiary)' }}>{task.id}</div>
-                <div>
+                <div className="task-item-head">
+                  <span className="task-item-id">#{task.id}</span>
                   <span className="pill" style={{ color: statusColor(task.status) }}>
                     <span className="pill-dot" />
-                    {task.status}
+                    {formatStatusLabel(task.status)}
                   </span>
                 </div>
+                <div className="task-item-title">{task.prompt_text?.trim() || 'No prompt text.'}</div>
                 <div className="task-item-meta">
                   <span>{task.provider}</span>
                   {task.is_proactive && <span className="pill mini-pill">proactive</span>}
@@ -288,14 +350,18 @@ export function TasksPage() {
                 </div>
               </Link>
             ))}
-            {tasks.length === 0 && (
-              <div className="tasks-sidebar-empty">No tasks available.</div>
+            {visibleTasks.length === 0 && (
+              <div className="tasks-sidebar-empty">
+                {tasks.length === 0 ? 'No tasks available.' : `No tasks in ${formatStatusLabel(statusFilter)}.`}
+              </div>
             )}
           </div>
         </section>
 
         <section className="tasks-main card">
-          <div className="card-title">Trace Inspector</div>
+          <div className="card-title">
+            {detailTask ? `Task #${detailTask.id}` : 'Trace Inspector'}
+          </div>
 
           {!detailTask ? (
             <div className="task-detail-empty">Select a task from the left to load its trace.</div>

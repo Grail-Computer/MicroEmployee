@@ -15,7 +15,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/" element={<Layout />}>
-        <Route index element={<Navigate to="status" replace />} />
+        <Route index element={<Navigate to="tasks" replace />} />
         <Route path="status" element={<StatusPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="tasks" element={<TasksPage />} />
