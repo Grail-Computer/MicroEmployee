@@ -34,7 +34,11 @@ RUN set -eux; \
     cargo build --release --locked -p grail-server -p grail-slack-mcp -p grail-web-mcp
 
 COPY grail /app/grail
-RUN cargo build --release --locked -p grail-server -p grail-slack-mcp -p grail-web-mcp
+RUN set -eux; \
+    # The dependency-priming step writes temporary main.rs files with fresh mtimes.
+    # Refresh copied workspace file mtimes so Cargo rebuilds real binaries.
+    find /app/grail -type f -exec touch {} +; \
+    cargo build --release --locked -p grail-server -p grail-slack-mcp -p grail-web-mcp
 
 # ── Stage 3: Runtime ───────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
