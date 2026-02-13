@@ -17,6 +17,17 @@ use crate::AppState;
 
 type ApiResult<T> = Result<Json<T>, crate::AppError>;
 
+fn env_bool(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "on" | "yes"))
+        .unwrap_or(false)
+}
+
+fn env_value(name: &str, default: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| default.to_string())
+}
+
 // ─── Status ────────────────────────────────────────────────────────────────
 
 pub async fn api_status(State(state): State<AppState>) -> ApiResult<Value> {
@@ -50,6 +61,23 @@ pub async fn api_status(State(state): State<AppState>) -> ApiResult<Value> {
             .map(|b| format!("{}/{}", b.trim_end_matches('/'), suffix))
             .unwrap_or_else(|| format!("/{suffix}"))
     };
+    let browser_enabled = env_bool("GRAIL_BROWSER_ENABLED") || env_bool("OPENCLAW_BROWSER_ENABLED");
+    let browser_novnc_enabled = env_bool("GRAIL_BROWSER_ENABLE_NOVNC");
+    let browser_profile_name = {
+        let value = env_value("GRAIL_BROWSER_PROFILE_NAME", "default");
+        if value.trim().is_empty() {
+            "default".to_string()
+        } else {
+            value
+        }
+    };
+    let browser_cdp_port = env_value("GRAIL_BROWSER_CDP_PORT", "9222");
+    let browser_novnc_port = env_value("GRAIL_BROWSER_NOVNC_PORT", "6080");
+    let browser_novnc_url = if browser_enabled && browser_novnc_enabled {
+        format!("http://localhost:{}/vnc.html", browser_novnc_port)
+    } else {
+        String::new()
+    };
 
     Ok(Json(json!({
         "slack_signing_secret_set": crate::secrets::slack_signing_secret_configured(&state).await.unwrap_or(false),
@@ -68,6 +96,11 @@ pub async fn api_status(State(state): State<AppState>) -> ApiResult<Value> {
         "active_task_started_at": active_task.as_ref().map(|(_, ts)| format!("{ts}")).unwrap_or_default(),
         "pending_approvals": pending_approvals,
         "guardrails_enabled": guardrails_enabled,
+        "browser_enabled": browser_enabled,
+        "browser_novnc_enabled": browser_novnc_enabled,
+        "browser_novnc_url": browser_novnc_url,
+        "browser_profile_name": browser_profile_name,
+        "browser_cdp_port": browser_cdp_port,
     })))
 }
 
@@ -100,6 +133,7 @@ pub async fn api_settings_get(State(state): State<AppState>) -> ApiResult<Value>
         "auto_apply_guardrail_tighten": s.auto_apply_guardrail_tighten,
         "web_allow_domains": s.web_allow_domains,
         "web_deny_domains": s.web_deny_domains,
+        "github_client_id": s.github_client_id,
         "master_key_set": state.crypto.is_some(),
         "openai_api_key_set": crate::secrets::openai_api_key_configured(&state).await.unwrap_or(false),
         "slack_signing_secret_set": crate::secrets::slack_signing_secret_configured(&state).await.unwrap_or(false),
@@ -136,6 +170,7 @@ pub struct ApiSettingsPost {
     pub auto_apply_guardrail_tighten: Option<bool>,
     pub web_allow_domains: Option<String>,
     pub web_deny_domains: Option<String>,
+    pub github_client_id: Option<String>,
 }
 
 pub async fn api_settings_post(
@@ -224,6 +259,9 @@ pub async fn api_settings_post(
     }
     if let Some(v) = form.web_deny_domains {
         s.web_deny_domains = v;
+    }
+    if let Some(v) = form.github_client_id {
+        s.github_client_id = v.trim().chars().take(200).collect();
     }
     db::update_settings(&state.pool, &s).await?;
     Ok(Json(json!({"ok": true})))
@@ -735,6 +773,7 @@ pub async fn api_auth_get(State(state): State<AppState>) -> ApiResult<Value> {
     let codex_home = state.config.effective_codex_home();
     let auth_summary = crate::codex_login::read_auth_summary(&codex_home).await?;
     let latest = db::get_latest_codex_device_login(&state.pool).await?;
+    let settings = db::get_settings(&state.pool).await?;
     let device_login = latest.map(|l| {
         json!({
             "status": l.status,
@@ -755,11 +794,17 @@ pub async fn api_auth_get(State(state): State<AppState>) -> ApiResult<Value> {
             "created_at": format!("{}", l.created_at),
         })
     });
-    let github_client_id_set = std::env::var("GITHUB_CLIENT_ID")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .is_some();
+    let stored_github_client_id = settings.github_client_id.trim().to_string();
+    let github_client_id_set = crate::secrets::github_client_id_configured(&state)
+        .await
+        .unwrap_or(false);
+    let github_client_id_source = if crate::secrets::load_github_client_id_from_env().is_some() {
+        "env"
+    } else if !stored_github_client_id.is_empty() {
+        "settings"
+    } else {
+        "unset"
+    };
 
     Ok(Json(json!({
         "openai_api_key_set": crate::secrets::openai_api_key_configured(&state).await.unwrap_or(false),
@@ -767,6 +812,8 @@ pub async fn api_auth_get(State(state): State<AppState>) -> ApiResult<Value> {
         "codex_auth_mode": auth_summary.auth_mode,
         "device_login": device_login,
         "github_client_id_set": github_client_id_set,
+        "github_client_id_source": github_client_id_source,
+        "github_client_id_value": stored_github_client_id,
         "github_token_set": crate::secrets::github_token_configured(&state).await.unwrap_or(false),
         "github_device_login": github_device_login,
     })))
@@ -836,11 +883,9 @@ pub async fn api_auth_logout(State(state): State<AppState>) -> ApiResult<Value> 
 pub async fn api_github_device_start(State(state): State<AppState>) -> ApiResult<Value> {
     let _ = db::cancel_pending_github_device_logins(&state.pool).await;
 
-    let client_id = std::env::var("GITHUB_CLIENT_ID")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .context("GITHUB_CLIENT_ID is not configured")?;
+    let client_id = crate::secrets::load_github_client_id_opt(&state)
+        .await?
+        .context("GitHub device login is not configured. Set GITHUB_CLIENT_ID or save it in admin settings.")?;
     let scope = std::env::var("GITHUB_OAUTH_SCOPE")
         .ok()
         .map(|s| s.trim().to_string())
@@ -865,12 +910,14 @@ pub async fn api_github_device_start(State(state): State<AppState>) -> ApiResult
         .verification_url_complete
         .clone()
         .unwrap_or_else(|| dc.verification_url.clone());
+    let response_verification_url = verification_url.clone();
+    let response_user_code = dc.user_code.clone();
 
     let id = crate::random_id("github_device_login");
     let login = crate::models::GithubDeviceLogin {
         id: id.clone(),
         status: "pending".to_string(),
-        verification_url,
+        verification_url: verification_url.clone(),
         user_code: dc.user_code.clone(),
         device_code: dc.device_code.clone(),
         interval_sec: dc.interval_sec as i64,
@@ -899,7 +946,9 @@ pub async fn api_github_device_start(State(state): State<AppState>) -> ApiResult
         .await;
     });
 
-    Ok(Json(json!({"ok": true})))
+    Ok(Json(
+        json!({"ok": true, "verification_url": response_verification_url, "user_code": response_user_code}),
+    ))
 }
 
 pub async fn api_github_device_cancel(State(state): State<AppState>) -> ApiResult<Value> {

@@ -37,6 +37,12 @@ pub struct Settings {
     pub slack_proactive_snippet: String,
     pub allow_telegram: bool,
     pub telegram_allow_from: String,
+    pub allow_whatsapp: bool,
+    pub whatsapp_allow_from: String,
+    pub allow_discord: bool,
+    pub discord_allow_from: String,
+    pub allow_msteams: bool,
+    pub msteams_allow_from: String,
     pub allow_slack_mcp: bool,
     pub allow_web_mcp: bool,
     /// Extra TOML appended to CODEX_HOME/config.toml (advanced).
@@ -52,6 +58,7 @@ pub struct Settings {
     pub auto_apply_guardrail_tighten: bool,
     pub web_allow_domains: String,
     pub web_deny_domains: String,
+    pub github_client_id: String,
     pub updated_at: i64,
 }
 

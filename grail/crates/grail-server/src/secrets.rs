@@ -14,11 +14,13 @@ fn normalize_nonempty(s: String) -> Option<String> {
     }
 }
 
+fn env_nonempty(key: &str) -> Option<String> {
+    std::env::var(key).ok().and_then(normalize_nonempty)
+}
+
 pub async fn load_openai_api_key_opt(state: &AppState) -> anyhow::Result<Option<String>> {
-    if let Ok(v) = std::env::var("OPENAI_API_KEY") {
-        if let Some(v) = normalize_nonempty(v) {
-            return Ok(Some(v));
-        }
+    if let Some(v) = env_nonempty("OPENAI_API_KEY") {
+        return Ok(Some(v));
     }
 
     let Some(crypto) = state.crypto.as_deref() else {
@@ -36,13 +38,27 @@ pub async fn openai_api_key_configured(state: &AppState) -> anyhow::Result<bool>
     Ok(load_openai_api_key_opt(state).await?.is_some())
 }
 
+pub fn load_github_client_id_from_env() -> Option<String> {
+    env_nonempty("GITHUB_CLIENT_ID")
+}
+
+pub async fn load_github_client_id_opt(state: &AppState) -> anyhow::Result<Option<String>> {
+    if let Some(v) = load_github_client_id_from_env() {
+        return Ok(Some(v));
+    }
+    let settings = db::get_settings(&state.pool).await?;
+    Ok(normalize_nonempty(settings.github_client_id))
+}
+
+pub async fn github_client_id_configured(state: &AppState) -> anyhow::Result<bool> {
+    Ok(load_github_client_id_opt(state).await?.is_some())
+}
+
 pub async fn load_github_token_opt(state: &AppState) -> anyhow::Result<Option<String>> {
     // Common env var names used by gh CLI and CI.
     for key in ["GITHUB_TOKEN", "GH_TOKEN"] {
-        if let Ok(v) = std::env::var(key) {
-            if let Some(v) = normalize_nonempty(v) {
-                return Ok(Some(v));
-            }
+        if let Some(v) = env_nonempty(key) {
+            return Ok(Some(v));
         }
     }
 
@@ -166,16 +182,12 @@ pub async fn telegram_webhook_secret_configured(state: &AppState) -> anyhow::Res
 }
 
 pub async fn load_brave_search_api_key_opt(state: &AppState) -> anyhow::Result<Option<String>> {
-    if let Ok(v) = std::env::var("BRAVE_SEARCH_API_KEY") {
-        if let Some(v) = normalize_nonempty(v) {
-            return Ok(Some(v));
-        }
+    if let Some(v) = env_nonempty("BRAVE_SEARCH_API_KEY") {
+        return Ok(Some(v));
     }
     // Nanobot-compatible name.
-    if let Ok(v) = std::env::var("BRAVE_API_KEY") {
-        if let Some(v) = normalize_nonempty(v) {
-            return Ok(Some(v));
-        }
+    if let Some(v) = env_nonempty("BRAVE_API_KEY") {
+        return Ok(Some(v));
     }
 
     let Some(crypto) = state.crypto.as_deref() else {
@@ -192,6 +204,165 @@ pub async fn load_brave_search_api_key_opt(state: &AppState) -> anyhow::Result<O
 
 pub async fn brave_search_api_key_configured(state: &AppState) -> anyhow::Result<bool> {
     Ok(load_brave_search_api_key_opt(state).await?.is_some())
+}
+
+// --- WhatsApp ---
+
+pub async fn load_whatsapp_access_token_opt(state: &AppState) -> anyhow::Result<Option<String>> {
+    if let Some(v) = state.config.whatsapp_access_token.as_deref() {
+        if let Some(v) = normalize_nonempty(v.to_string()) {
+            return Ok(Some(v));
+        }
+    }
+    let Some(crypto) = state.crypto.as_deref() else {
+        return Ok(None);
+    };
+    let Some((nonce, ciphertext)) = db::read_secret(&state.pool, "whatsapp_access_token").await?
+    else {
+        return Ok(None);
+    };
+    let plaintext = crypto.decrypt(b"whatsapp_access_token", &nonce, &ciphertext)?;
+    let s = String::from_utf8(plaintext).context("WHATSAPP_ACCESS_TOKEN not valid utf-8")?;
+    Ok(normalize_nonempty(s))
+}
+
+pub async fn whatsapp_access_token_configured(state: &AppState) -> anyhow::Result<bool> {
+    Ok(load_whatsapp_access_token_opt(state).await?.is_some())
+}
+
+pub async fn load_whatsapp_verify_token_opt(state: &AppState) -> anyhow::Result<Option<String>> {
+    if let Some(v) = state.config.whatsapp_verify_token.as_deref() {
+        if let Some(v) = normalize_nonempty(v.to_string()) {
+            return Ok(Some(v));
+        }
+    }
+    let Some(crypto) = state.crypto.as_deref() else {
+        return Ok(None);
+    };
+    let Some((nonce, ciphertext)) = db::read_secret(&state.pool, "whatsapp_verify_token").await?
+    else {
+        return Ok(None);
+    };
+    let plaintext = crypto.decrypt(b"whatsapp_verify_token", &nonce, &ciphertext)?;
+    let s = String::from_utf8(plaintext).context("WHATSAPP_VERIFY_TOKEN not valid utf-8")?;
+    Ok(normalize_nonempty(s))
+}
+
+pub async fn whatsapp_verify_token_configured(state: &AppState) -> anyhow::Result<bool> {
+    Ok(load_whatsapp_verify_token_opt(state).await?.is_some())
+}
+
+pub async fn load_whatsapp_phone_number_id_opt(state: &AppState) -> anyhow::Result<Option<String>> {
+    if let Some(v) = state.config.whatsapp_phone_number_id.as_deref() {
+        if let Some(v) = normalize_nonempty(v.to_string()) {
+            return Ok(Some(v));
+        }
+    }
+    let Some(crypto) = state.crypto.as_deref() else {
+        return Ok(None);
+    };
+    let Some((nonce, ciphertext)) =
+        db::read_secret(&state.pool, "whatsapp_phone_number_id").await?
+    else {
+        return Ok(None);
+    };
+    let plaintext = crypto.decrypt(b"whatsapp_phone_number_id", &nonce, &ciphertext)?;
+    let s = String::from_utf8(plaintext).context("WHATSAPP_PHONE_NUMBER_ID not valid utf-8")?;
+    Ok(normalize_nonempty(s))
+}
+
+pub async fn whatsapp_phone_number_id_configured(state: &AppState) -> anyhow::Result<bool> {
+    Ok(load_whatsapp_phone_number_id_opt(state).await?.is_some())
+}
+
+// --- Discord ---
+
+pub async fn load_discord_bot_token_opt(state: &AppState) -> anyhow::Result<Option<String>> {
+    if let Some(v) = state.config.discord_bot_token.as_deref() {
+        if let Some(v) = normalize_nonempty(v.to_string()) {
+            return Ok(Some(v));
+        }
+    }
+    let Some(crypto) = state.crypto.as_deref() else {
+        return Ok(None);
+    };
+    let Some((nonce, ciphertext)) = db::read_secret(&state.pool, "discord_bot_token").await? else {
+        return Ok(None);
+    };
+    let plaintext = crypto.decrypt(b"discord_bot_token", &nonce, &ciphertext)?;
+    let s = String::from_utf8(plaintext).context("DISCORD_BOT_TOKEN not valid utf-8")?;
+    Ok(normalize_nonempty(s))
+}
+
+pub async fn discord_bot_token_configured(state: &AppState) -> anyhow::Result<bool> {
+    Ok(load_discord_bot_token_opt(state).await?.is_some())
+}
+
+pub async fn load_discord_public_key_opt(state: &AppState) -> anyhow::Result<Option<String>> {
+    if let Some(v) = state.config.discord_public_key.as_deref() {
+        if let Some(v) = normalize_nonempty(v.to_string()) {
+            return Ok(Some(v));
+        }
+    }
+    let Some(crypto) = state.crypto.as_deref() else {
+        return Ok(None);
+    };
+    let Some((nonce, ciphertext)) = db::read_secret(&state.pool, "discord_public_key").await?
+    else {
+        return Ok(None);
+    };
+    let plaintext = crypto.decrypt(b"discord_public_key", &nonce, &ciphertext)?;
+    let s = String::from_utf8(plaintext).context("DISCORD_PUBLIC_KEY not valid utf-8")?;
+    Ok(normalize_nonempty(s))
+}
+
+pub async fn discord_public_key_configured(state: &AppState) -> anyhow::Result<bool> {
+    Ok(load_discord_public_key_opt(state).await?.is_some())
+}
+
+// --- MS Teams ---
+
+pub async fn load_msteams_app_id_opt(state: &AppState) -> anyhow::Result<Option<String>> {
+    if let Some(v) = state.config.msteams_app_id.as_deref() {
+        if let Some(v) = normalize_nonempty(v.to_string()) {
+            return Ok(Some(v));
+        }
+    }
+    let Some(crypto) = state.crypto.as_deref() else {
+        return Ok(None);
+    };
+    let Some((nonce, ciphertext)) = db::read_secret(&state.pool, "msteams_app_id").await? else {
+        return Ok(None);
+    };
+    let plaintext = crypto.decrypt(b"msteams_app_id", &nonce, &ciphertext)?;
+    let s = String::from_utf8(plaintext).context("MSTEAMS_APP_ID not valid utf-8")?;
+    Ok(normalize_nonempty(s))
+}
+
+pub async fn msteams_app_id_configured(state: &AppState) -> anyhow::Result<bool> {
+    Ok(load_msteams_app_id_opt(state).await?.is_some())
+}
+
+pub async fn load_msteams_app_password_opt(state: &AppState) -> anyhow::Result<Option<String>> {
+    if let Some(v) = state.config.msteams_app_password.as_deref() {
+        if let Some(v) = normalize_nonempty(v.to_string()) {
+            return Ok(Some(v));
+        }
+    }
+    let Some(crypto) = state.crypto.as_deref() else {
+        return Ok(None);
+    };
+    let Some((nonce, ciphertext)) = db::read_secret(&state.pool, "msteams_app_password").await?
+    else {
+        return Ok(None);
+    };
+    let plaintext = crypto.decrypt(b"msteams_app_password", &nonce, &ciphertext)?;
+    let s = String::from_utf8(plaintext).context("MSTEAMS_APP_PASSWORD not valid utf-8")?;
+    Ok(normalize_nonempty(s))
+}
+
+pub async fn msteams_app_password_configured(state: &AppState) -> anyhow::Result<bool> {
+    Ok(load_msteams_app_password_opt(state).await?.is_some())
 }
 
 static SECRET_REDACTIONS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {

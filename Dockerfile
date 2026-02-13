@@ -28,10 +28,20 @@ RUN cargo build --release -p grail-server -p grail-slack-mcp -p grail-web-mcp
 FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
     ca-certificates \
+    chromium \
     curl \
     git \
     gosu \
+    fonts-liberation \
+    fonts-noto-color-emoji \
+    novnc \
+    python3 \
+    socat \
+    websockify \
+    x11vnc \
+    xvfb \
     tar \
     && rm -rf /var/lib/apt/lists/*
 
@@ -66,6 +76,8 @@ RUN useradd -m -u 10001 -s /bin/bash app
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+COPY grail-browser-service.sh /usr/local/bin/grail-browser-service
+RUN chmod +x /usr/local/bin/grail-browser-service
 
-EXPOSE 3000
+EXPOSE 3000 9222 5900 6080
 ENTRYPOINT ["/entrypoint.sh"]

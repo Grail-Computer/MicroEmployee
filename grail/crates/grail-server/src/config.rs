@@ -41,6 +41,28 @@ pub struct Config {
     #[arg(long, env = "TELEGRAM_WEBHOOK_SECRET")]
     pub telegram_webhook_secret: Option<String>,
 
+    #[arg(long, env = "WHATSAPP_ACCESS_TOKEN")]
+    pub whatsapp_access_token: Option<String>,
+
+    #[arg(long, env = "WHATSAPP_VERIFY_TOKEN")]
+    pub whatsapp_verify_token: Option<String>,
+
+    #[arg(long, env = "WHATSAPP_PHONE_NUMBER_ID")]
+    pub whatsapp_phone_number_id: Option<String>,
+
+    #[arg(long, env = "DISCORD_BOT_TOKEN")]
+    pub discord_bot_token: Option<String>,
+
+    /// Discord application public key for verifying webhook signatures.
+    #[arg(long, env = "DISCORD_PUBLIC_KEY")]
+    pub discord_public_key: Option<String>,
+
+    #[arg(long, env = "MSTEAMS_APP_ID")]
+    pub msteams_app_id: Option<String>,
+
+    #[arg(long, env = "MSTEAMS_APP_PASSWORD")]
+    pub msteams_app_password: Option<String>,
+
     /// Optional base URL used when rendering links in the dashboard.
     #[arg(long, env = "BASE_URL")]
     pub base_url: Option<String>,

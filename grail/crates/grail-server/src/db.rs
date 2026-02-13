@@ -61,6 +61,7 @@ pub async fn get_settings(pool: &SqlitePool) -> anyhow::Result<Settings> {
           auto_apply_guardrail_tighten,
           web_allow_domains,
           web_deny_domains,
+          github_client_id,
           updated_at
         FROM settings
         WHERE id = 1
@@ -118,6 +119,9 @@ pub async fn get_settings(pool: &SqlitePool) -> anyhow::Result<Settings> {
         web_deny_domains: row
             .get::<Option<String>, _>("web_deny_domains")
             .unwrap_or_default(),
+        github_client_id: row
+            .get::<Option<String>, _>("github_client_id")
+            .unwrap_or_default(),
         updated_at: row.get::<i64, _>("updated_at"),
     })
 }
@@ -150,6 +154,7 @@ pub async fn update_settings(pool: &SqlitePool, settings: &Settings) -> anyhow::
             auto_apply_guardrail_tighten = ?,
             web_allow_domains = ?,
             web_deny_domains = ?,
+            github_client_id = ?,
             updated_at = unixepoch()
         WHERE id = 1
         "#,
@@ -186,6 +191,7 @@ pub async fn update_settings(pool: &SqlitePool, settings: &Settings) -> anyhow::
     })
     .bind(settings.web_allow_domains.as_str())
     .bind(settings.web_deny_domains.as_str())
+    .bind(settings.github_client_id.as_str())
     .execute(pool)
     .await
     .context("update settings")?;
@@ -350,6 +356,58 @@ pub async fn enqueue_task_with_files(
     .execute(pool)
     .await
     .context("insert task")?;
+
+    Ok(res.last_insert_rowid())
+}
+
+pub async fn enqueue_ignored_task(
+    pool: &SqlitePool,
+    provider: &str,
+    workspace_id: &str,
+    channel_id: &str,
+    thread_ts: &str,
+    event_ts: &str,
+    requested_by_user_id: &str,
+    prompt_text: &str,
+    reason: &str,
+    is_proactive: bool,
+) -> anyhow::Result<i64> {
+    let conversation_key =
+        compute_conversation_key(workspace_id, channel_id, thread_ts, event_ts, is_proactive);
+    let res = sqlx::query(
+        r#"
+        INSERT INTO tasks (
+          provider,
+          status,
+          workspace_id,
+          channel_id,
+          thread_ts,
+          conversation_key,
+          event_ts,
+          requested_by_user_id,
+          prompt_text,
+          files_json,
+          is_proactive,
+          result_text,
+          created_at
+        )
+        VALUES (?1, 'ignored', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, unixepoch())
+        "#,
+    )
+    .bind(provider)
+    .bind(workspace_id)
+    .bind(channel_id)
+    .bind(thread_ts)
+    .bind(&conversation_key)
+    .bind(event_ts)
+    .bind(requested_by_user_id)
+    .bind(prompt_text)
+    .bind("")
+    .bind(if is_proactive { 1 } else { 0 })
+    .bind(reason)
+    .execute(pool)
+    .await
+    .context("insert ignored task")?;
 
     Ok(res.last_insert_rowid())
 }

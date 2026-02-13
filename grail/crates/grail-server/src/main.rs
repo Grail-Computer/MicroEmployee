@@ -13,7 +13,6 @@ mod models;
 mod secrets;
 mod slack;
 mod telegram;
-mod templates;
 mod worker;
 
 use std::collections::HashMap;
@@ -22,12 +21,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use askama::Template;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Form, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware;
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, get_service, post};
 use axum::Router;
 use clap::Parser;
@@ -42,16 +40,12 @@ use crate::config::Config;
 use crate::crypto::{parse_master_key, Crypto};
 use crate::models::PermissionsMode;
 use crate::secrets::{
-    brave_search_api_key_configured, github_token_configured, openai_api_key_configured,
+    brave_search_api_key_configured, github_client_id_configured, github_token_configured,
+    openai_api_key_configured,
     slack_bot_token_configured, slack_signing_secret_configured, telegram_bot_token_configured,
     telegram_webhook_secret_configured,
 };
 use crate::slack::{verify_slack_signature, SlackClient};
-use crate::templates::{
-    ApprovalsTemplate, AuthTemplate, ContextEditTemplate, ContextTemplate, CronTemplate,
-    DeviceLoginRow, DiagnosticsTemplate, GuardrailsTemplate, MemoryTemplate, SettingsTemplate,
-    StatusTemplate, TasksTemplate,
-};
 
 type AppResult<T> = Result<T, AppError>;
 
@@ -66,12 +60,6 @@ impl From<anyhow::Error> for AppError {
 
 impl From<sqlx::Error> for AppError {
     fn from(value: sqlx::Error) -> Self {
-        Self(anyhow::Error::new(value))
-    }
-}
-
-impl From<askama::Error> for AppError {
-    fn from(value: askama::Error) -> Self {
         Self(anyhow::Error::new(value))
     }
 }
@@ -134,88 +122,6 @@ async fn main() -> anyhow::Result<()> {
 
     // Background worker (configurable concurrency).
     tokio::spawn(worker::worker_loop(state.clone()));
-
-    let admin = Router::new()
-        .route("/", get(|| async { Redirect::to("/admin/status") }))
-        .route("/status", get(admin_status))
-        .route(
-            "/settings",
-            get(admin_settings_get).post(admin_settings_post),
-        )
-        .route("/auth", get(admin_auth_get))
-        .route("/auth/device/start", post(admin_auth_device_start))
-        .route("/auth/device/cancel", post(admin_auth_device_cancel))
-        .route("/auth/logout", post(admin_auth_logout))
-        .route(
-            "/auth/github/device/start",
-            post(admin_auth_github_device_start),
-        )
-        .route(
-            "/auth/github/device/cancel",
-            post(admin_auth_github_device_cancel),
-        )
-        .route("/auth/github/logout", post(admin_auth_github_logout))
-        .route("/secrets/openai", post(admin_set_openai_api_key))
-        .route("/secrets/openai/delete", post(admin_delete_openai_api_key))
-        .route("/secrets/brave", post(admin_set_brave_search_api_key))
-        .route(
-            "/secrets/brave/delete",
-            post(admin_delete_brave_search_api_key),
-        )
-        .route(
-            "/secrets/slack/signing",
-            post(admin_set_slack_signing_secret),
-        )
-        .route(
-            "/secrets/slack/signing/delete",
-            post(admin_delete_slack_signing_secret),
-        )
-        .route("/secrets/slack/bot", post(admin_set_slack_bot_token))
-        .route(
-            "/secrets/slack/bot/delete",
-            post(admin_delete_slack_bot_token),
-        )
-        .route("/secrets/telegram/bot", post(admin_set_telegram_bot_token))
-        .route(
-            "/secrets/telegram/bot/delete",
-            post(admin_delete_telegram_bot_token),
-        )
-        .route(
-            "/secrets/telegram/webhook",
-            post(admin_set_telegram_webhook_secret),
-        )
-        .route(
-            "/secrets/telegram/webhook/delete",
-            post(admin_delete_telegram_webhook_secret),
-        )
-        .route("/tasks", get(admin_tasks))
-        .route("/tasks/{id}", get(admin_tasks_redirect))
-        .route("/tasks/{id}/cancel", post(admin_task_cancel))
-        .route("/tasks/{id}/retry", post(admin_task_retry))
-        .route("/diagnostics", get(admin_diagnostics_get))
-        .route("/diagnostics/codex", post(admin_diagnostics_codex_post))
-        .route("/cron", get(admin_cron_get))
-        .route("/cron/add", post(admin_cron_add))
-        .route("/cron/{id}/delete", post(admin_cron_delete))
-        .route("/cron/{id}/enable", post(admin_cron_enable))
-        .route("/cron/{id}/disable", post(admin_cron_disable))
-        .route("/guardrails", get(admin_guardrails_get))
-        .route("/guardrails/add", post(admin_guardrails_add))
-        .route("/guardrails/{id}/delete", post(admin_guardrails_delete))
-        .route("/guardrails/{id}/enable", post(admin_guardrails_enable))
-        .route("/guardrails/{id}/disable", post(admin_guardrails_disable))
-        .route("/approvals", get(admin_approvals_get))
-        .route("/approvals/{id}/approve", post(admin_approval_approve))
-        .route("/approvals/{id}/always", post(admin_approval_always))
-        .route("/approvals/{id}/deny", post(admin_approval_deny))
-        .route("/memory", get(admin_memory_get))
-        .route("/memory/clear", post(admin_memory_clear))
-        .route("/context", get(admin_context_get))
-        .route(
-            "/context/edit",
-            get(admin_context_edit_get).post(admin_context_edit_post),
-        )
-        .route("/context/view", get(admin_context_view_get));
 
     let api_routes = Router::new()
         .route("/status", get(api::api_status))
@@ -290,7 +196,7 @@ async fn main() -> anyhow::Result<()> {
         .map(std::path::PathBuf::from)
         .unwrap_or(frontend_dir);
 
-    let admin_protected = if frontend_dir_env.join("index.html").exists() {
+    let admin_routes = if frontend_dir_env.join("index.html").exists() {
         info!(
             dir = %frontend_dir_env.display(),
             "serving React SPA from frontend-dist"
@@ -303,9 +209,10 @@ async fn main() -> anyhow::Result<()> {
             .nest_service("/assets", assets)
             .nest("/api/admin", api_routes)
     } else {
-        info!("frontend-dist not found; serving Askama admin UI");
+        info!("frontend-dist not found; React admin build is required for /admin");
         Router::new()
-            .nest("/admin", admin)
+            .route("/admin", get(admin_frontend_missing))
+            .route("/admin/{*path}", get(admin_frontend_missing))
             .nest("/api/admin", api_routes)
     }
     .layer(middleware::from_fn_with_state(
@@ -313,7 +220,7 @@ async fn main() -> anyhow::Result<()> {
         admin_basic_auth,
     ));
 
-    let app = app.merge(admin_protected);
+    let app = app.merge(admin_routes);
 
     let app = app
         .with_state(state)
@@ -329,6 +236,13 @@ async fn main() -> anyhow::Result<()> {
 
 async fn healthz() -> impl IntoResponse {
     (StatusCode::OK, "ok")
+}
+
+async fn admin_frontend_missing() -> impl IntoResponse {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Admin frontend not available. Build and mount the React frontend to /admin.",
+    )
 }
 
 async fn admin_basic_auth(
@@ -556,1202 +470,6 @@ mod tests {
     }
 }
 
-async fn admin_status(State(state): State<AppState>) -> AppResult<Html<String>> {
-    let settings = db::get_settings(&state.pool).await?;
-    let queue_depth: i64 = sqlx::query("SELECT COUNT(*) AS c FROM tasks WHERE status = 'queued'")
-        .fetch_one(&state.pool)
-        .await?
-        .get::<i64, _>("c");
-
-    let worker_lock_owner = db::get_worker_lock_owner(&state.pool)
-        .await?
-        .unwrap_or_else(|| "(none)".to_string());
-
-    let active_task = db::list_active_tasks(&state.pool, 1)
-        .await?
-        .into_iter()
-        .next();
-    let pending_approvals: i64 =
-        sqlx::query("SELECT COUNT(*) AS c FROM approvals WHERE status = 'pending'")
-            .fetch_one(&state.pool)
-            .await?
-            .get::<i64, _>("c");
-    let guardrails_enabled: i64 =
-        sqlx::query("SELECT COUNT(*) AS c FROM guardrail_rules WHERE enabled = 1")
-            .fetch_one(&state.pool)
-            .await?
-            .get::<i64, _>("c");
-
-    let slack_events_url = state
-        .config
-        .base_url
-        .as_deref()
-        .map(|b| format!("{}/slack/events", b.trim_end_matches('/')))
-        .unwrap_or_else(|| "/slack/events".to_string());
-
-    let slack_actions_url = state
-        .config
-        .base_url
-        .as_deref()
-        .map(|b| format!("{}/slack/actions", b.trim_end_matches('/')))
-        .unwrap_or_else(|| "/slack/actions".to_string());
-
-    let telegram_webhook_url = state
-        .config
-        .base_url
-        .as_deref()
-        .map(|b| format!("{}/telegram/webhook", b.trim_end_matches('/')))
-        .unwrap_or_else(|| "/telegram/webhook".to_string());
-
-    let tpl = StatusTemplate {
-        active: "status",
-        slack_signing_secret_set: slack_signing_secret_configured(&state).await?,
-        slack_bot_token_set: slack_bot_token_configured(&state).await?,
-        telegram_bot_token_set: telegram_bot_token_configured(&state).await?,
-        telegram_webhook_secret_set: telegram_webhook_secret_configured(&state).await?,
-        openai_api_key_set: openai_api_key_configured(&state).await?,
-        master_key_set: state.crypto.is_some(),
-        queue_depth,
-        permissions_mode: settings.permissions_mode.as_db_str().to_string(),
-        slack_events_url,
-        slack_actions_url,
-        telegram_webhook_url,
-        worker_lock_owner,
-        active_task_id: active_task
-            .as_ref()
-            .map(|(id, _)| format!("{id}"))
-            .unwrap_or_default(),
-        active_task_started_at: active_task
-            .as_ref()
-            .map(|(_, ts)| format!("{ts}"))
-            .unwrap_or_default(),
-        pending_approvals,
-        guardrails_enabled,
-    };
-    Ok(Html(tpl.render()?))
-}
-
-async fn admin_settings_get(State(state): State<AppState>) -> AppResult<Html<String>> {
-    let settings = db::get_settings(&state.pool).await?;
-    let tpl = SettingsTemplate {
-        active: "settings",
-        context_last_n: settings.context_last_n,
-        model: settings.model.unwrap_or_default(),
-        reasoning_effort: settings.reasoning_effort.unwrap_or_default(),
-        reasoning_summary: settings.reasoning_summary.unwrap_or_default(),
-        permissions_mode: settings.permissions_mode.as_db_str().to_string(),
-        slack_allow_from: settings.slack_allow_from,
-        slack_allow_channels: settings.slack_allow_channels,
-        slack_proactive_enabled: settings.slack_proactive_enabled,
-        slack_proactive_snippet: settings.slack_proactive_snippet,
-        allow_telegram: settings.allow_telegram,
-        telegram_allow_from: settings.telegram_allow_from,
-        allow_slack_mcp: settings.allow_slack_mcp,
-        allow_web_mcp: settings.allow_web_mcp,
-        extra_mcp_config: settings.extra_mcp_config,
-        allow_context_writes: settings.allow_context_writes,
-        shell_network_access: settings.shell_network_access,
-        allow_cron: settings.allow_cron,
-        auto_apply_cron_jobs: settings.auto_apply_cron_jobs,
-        agent_name: settings.agent_name,
-        role_description: settings.role_description,
-        command_approval_mode: settings.command_approval_mode,
-        auto_apply_guardrail_tighten: settings.auto_apply_guardrail_tighten,
-        web_allow_domains: settings.web_allow_domains,
-        web_deny_domains: settings.web_deny_domains,
-        master_key_set: state.crypto.is_some(),
-        openai_api_key_set: openai_api_key_configured(&state).await?,
-        slack_signing_secret_set: slack_signing_secret_configured(&state).await?,
-        slack_bot_token_set: slack_bot_token_configured(&state).await?,
-        telegram_bot_token_set: telegram_bot_token_configured(&state).await?,
-        telegram_webhook_secret_set: telegram_webhook_secret_configured(&state).await?,
-        brave_search_api_key_set: brave_search_api_key_configured(&state).await?,
-    };
-    Ok(Html(tpl.render()?))
-}
-
-#[derive(Debug, Deserialize)]
-struct SettingsForm {
-    context_last_n: i64,
-    model: Option<String>,
-    reasoning_effort: Option<String>,
-    reasoning_summary: Option<String>,
-    permissions_mode: String,
-    slack_allow_from: String,
-    slack_allow_channels: String,
-    slack_proactive_enabled: Option<String>,
-    slack_proactive_snippet: String,
-    allow_telegram: Option<String>,
-    telegram_allow_from: String,
-    allow_slack_mcp: Option<String>,
-    allow_web_mcp: Option<String>,
-    extra_mcp_config: String,
-    allow_context_writes: Option<String>,
-    shell_network_access: Option<String>,
-    allow_cron: Option<String>,
-    auto_apply_cron_jobs: Option<String>,
-    agent_name: String,
-    role_description: String,
-    command_approval_mode: String,
-    auto_apply_guardrail_tighten: Option<String>,
-    web_allow_domains: String,
-    web_deny_domains: String,
-}
-
-async fn admin_settings_post(
-    State(state): State<AppState>,
-    Form(form): Form<SettingsForm>,
-) -> AppResult<Redirect> {
-    let mut settings = db::get_settings(&state.pool).await?;
-
-    settings.context_last_n = form.context_last_n.clamp(1, 200);
-    settings.permissions_mode = match form.permissions_mode.as_str() {
-        "full" => PermissionsMode::Full,
-        _ => PermissionsMode::Read,
-    };
-
-    settings.model = normalize_optional_string(form.model);
-    settings.reasoning_effort = normalize_optional_string(form.reasoning_effort);
-    settings.reasoning_summary = normalize_optional_string(form.reasoning_summary);
-
-    // Comma/whitespace/newline separated Slack user IDs (e.g. U0123...).
-    settings.slack_allow_from = clamp_chars(form.slack_allow_from.trim().to_string(), 2_000);
-    // Optional channel allow list (C/G IDs).
-    settings.slack_allow_channels =
-        clamp_chars(form.slack_allow_channels.trim().to_string(), 2_000);
-    settings.slack_proactive_enabled = form.slack_proactive_enabled.is_some();
-    settings.slack_proactive_snippet =
-        clamp_chars(form.slack_proactive_snippet.trim().to_string(), 8_000);
-
-    settings.allow_telegram = form.allow_telegram.is_some();
-    // Comma/whitespace/newline separated Telegram user IDs (integers).
-    settings.telegram_allow_from = clamp_chars(form.telegram_allow_from.trim().to_string(), 2_000);
-
-    settings.allow_slack_mcp = form.allow_slack_mcp.is_some();
-    settings.allow_web_mcp = form.allow_web_mcp.is_some();
-    settings.extra_mcp_config = clamp_chars(form.extra_mcp_config, 60_000);
-    settings.allow_context_writes = form.allow_context_writes.is_some();
-    settings.shell_network_access = form.shell_network_access.is_some();
-    settings.allow_cron = form.allow_cron.is_some();
-    settings.auto_apply_cron_jobs = form.auto_apply_cron_jobs.is_some();
-
-    settings.agent_name = {
-        let v = clamp_chars(form.agent_name.trim().to_string(), 48);
-        if v.is_empty() {
-            "Grail".to_string()
-        } else {
-            v
-        }
-    };
-    settings.role_description = clamp_chars(form.role_description.trim().to_string(), 8_000);
-    settings.command_approval_mode = match form.command_approval_mode.as_str() {
-        "auto" | "guardrails" | "always_ask" => form.command_approval_mode,
-        _ => "guardrails".to_string(),
-    };
-    settings.auto_apply_guardrail_tighten = form.auto_apply_guardrail_tighten.is_some();
-    settings.web_allow_domains = clamp_chars(form.web_allow_domains.trim().to_string(), 2_000);
-    settings.web_deny_domains = clamp_chars(form.web_deny_domains.trim().to_string(), 2_000);
-
-    db::update_settings(&state.pool, &settings).await?;
-    Ok(Redirect::to("/admin/settings"))
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAiKeyForm {
-    openai_api_key: String,
-}
-
-async fn admin_set_openai_api_key(
-    State(state): State<AppState>,
-    Form(form): Form<OpenAiKeyForm>,
-) -> AppResult<Redirect> {
-    let Some(crypto) = state.crypto.as_deref() else {
-        return Err(anyhow::anyhow!("GRAIL_MASTER_KEY is required to store secrets").into());
-    };
-
-    let key = form.openai_api_key.trim();
-    if key.is_empty() {
-        return Ok(Redirect::to("/admin/settings"));
-    }
-
-    let (nonce, ciphertext) = crypto.encrypt(b"openai_api_key", key.as_bytes())?;
-    db::upsert_secret(&state.pool, "openai_api_key", &nonce, &ciphertext).await?;
-    Ok(Redirect::to("/admin/settings"))
-}
-
-async fn admin_delete_openai_api_key(State(state): State<AppState>) -> AppResult<Redirect> {
-    db::delete_secret(&state.pool, "openai_api_key").await?;
-    Ok(Redirect::to("/admin/settings"))
-}
-
-#[derive(Debug, Deserialize)]
-struct BraveKeyForm {
-    brave_search_api_key: String,
-}
-
-async fn admin_set_brave_search_api_key(
-    State(state): State<AppState>,
-    Form(form): Form<BraveKeyForm>,
-) -> AppResult<Redirect> {
-    let Some(crypto) = state.crypto.as_deref() else {
-        return Err(anyhow::anyhow!("GRAIL_MASTER_KEY is required to store secrets").into());
-    };
-
-    let key = form.brave_search_api_key.trim();
-    if key.is_empty() {
-        return Ok(Redirect::to("/admin/settings"));
-    }
-
-    let (nonce, ciphertext) = crypto.encrypt(b"brave_search_api_key", key.as_bytes())?;
-    db::upsert_secret(&state.pool, "brave_search_api_key", &nonce, &ciphertext).await?;
-    Ok(Redirect::to("/admin/settings"))
-}
-
-async fn admin_delete_brave_search_api_key(State(state): State<AppState>) -> AppResult<Redirect> {
-    db::delete_secret(&state.pool, "brave_search_api_key").await?;
-    Ok(Redirect::to("/admin/settings"))
-}
-
-#[derive(Debug, Deserialize)]
-struct SlackSigningSecretForm {
-    slack_signing_secret: String,
-}
-
-async fn admin_set_slack_signing_secret(
-    State(state): State<AppState>,
-    Form(form): Form<SlackSigningSecretForm>,
-) -> AppResult<Redirect> {
-    let Some(crypto) = state.crypto.as_deref() else {
-        return Err(anyhow::anyhow!("GRAIL_MASTER_KEY is required to store secrets").into());
-    };
-
-    let secret = form.slack_signing_secret.trim();
-    if secret.is_empty() {
-        return Ok(Redirect::to("/admin/settings"));
-    }
-
-    let (nonce, ciphertext) = crypto.encrypt(b"slack_signing_secret", secret.as_bytes())?;
-    db::upsert_secret(&state.pool, "slack_signing_secret", &nonce, &ciphertext).await?;
-    Ok(Redirect::to("/admin/settings"))
-}
-
-async fn admin_delete_slack_signing_secret(State(state): State<AppState>) -> AppResult<Redirect> {
-    db::delete_secret(&state.pool, "slack_signing_secret").await?;
-    Ok(Redirect::to("/admin/settings"))
-}
-
-#[derive(Debug, Deserialize)]
-struct SlackBotTokenForm {
-    slack_bot_token: String,
-}
-
-async fn admin_set_slack_bot_token(
-    State(state): State<AppState>,
-    Form(form): Form<SlackBotTokenForm>,
-) -> AppResult<Redirect> {
-    let Some(crypto) = state.crypto.as_deref() else {
-        return Err(anyhow::anyhow!("GRAIL_MASTER_KEY is required to store secrets").into());
-    };
-
-    let token = form.slack_bot_token.trim();
-    if token.is_empty() {
-        return Ok(Redirect::to("/admin/settings"));
-    }
-
-    let (nonce, ciphertext) = crypto.encrypt(b"slack_bot_token", token.as_bytes())?;
-    db::upsert_secret(&state.pool, "slack_bot_token", &nonce, &ciphertext).await?;
-    Ok(Redirect::to("/admin/settings"))
-}
-
-async fn admin_delete_slack_bot_token(State(state): State<AppState>) -> AppResult<Redirect> {
-    db::delete_secret(&state.pool, "slack_bot_token").await?;
-    Ok(Redirect::to("/admin/settings"))
-}
-
-#[derive(Debug, Deserialize)]
-struct TelegramBotTokenForm {
-    telegram_bot_token: String,
-}
-
-async fn admin_set_telegram_bot_token(
-    State(state): State<AppState>,
-    Form(form): Form<TelegramBotTokenForm>,
-) -> AppResult<Redirect> {
-    let Some(crypto) = state.crypto.as_deref() else {
-        return Err(anyhow::anyhow!("GRAIL_MASTER_KEY is required to store secrets").into());
-    };
-
-    let token = form.telegram_bot_token.trim();
-    if token.is_empty() {
-        return Ok(Redirect::to("/admin/settings"));
-    }
-
-    let (nonce, ciphertext) = crypto.encrypt(b"telegram_bot_token", token.as_bytes())?;
-    db::upsert_secret(&state.pool, "telegram_bot_token", &nonce, &ciphertext).await?;
-    Ok(Redirect::to("/admin/settings"))
-}
-
-async fn admin_delete_telegram_bot_token(State(state): State<AppState>) -> AppResult<Redirect> {
-    db::delete_secret(&state.pool, "telegram_bot_token").await?;
-    Ok(Redirect::to("/admin/settings"))
-}
-
-#[derive(Debug, Deserialize)]
-struct TelegramWebhookSecretForm {
-    telegram_webhook_secret: String,
-}
-
-async fn admin_set_telegram_webhook_secret(
-    State(state): State<AppState>,
-    Form(form): Form<TelegramWebhookSecretForm>,
-) -> AppResult<Redirect> {
-    let Some(crypto) = state.crypto.as_deref() else {
-        return Err(anyhow::anyhow!("GRAIL_MASTER_KEY is required to store secrets").into());
-    };
-
-    let secret = form.telegram_webhook_secret.trim();
-    if secret.is_empty() {
-        return Ok(Redirect::to("/admin/settings"));
-    }
-
-    let (nonce, ciphertext) = crypto.encrypt(b"telegram_webhook_secret", secret.as_bytes())?;
-    db::upsert_secret(&state.pool, "telegram_webhook_secret", &nonce, &ciphertext).await?;
-    Ok(Redirect::to("/admin/settings"))
-}
-
-async fn admin_delete_telegram_webhook_secret(
-    State(state): State<AppState>,
-) -> AppResult<Redirect> {
-    db::delete_secret(&state.pool, "telegram_webhook_secret").await?;
-    Ok(Redirect::to("/admin/settings"))
-}
-
-fn normalize_optional_string(v: Option<String>) -> Option<String> {
-    let Some(s) = v else { return None };
-    let s = s.trim();
-    if s.is_empty() {
-        None
-    } else {
-        Some(s.to_string())
-    }
-}
-
-async fn admin_tasks(State(state): State<AppState>) -> AppResult<Html<String>> {
-    let tasks = db::list_recent_tasks(&state.pool, 50).await?;
-    let tpl = TasksTemplate {
-        active: "tasks",
-        tasks: tasks.into_iter().map(Into::into).collect(),
-    };
-    Ok(Html(tpl.render()?))
-}
-
-async fn admin_memory_get(State(state): State<AppState>) -> AppResult<Html<String>> {
-    let sessions = db::list_sessions(&state.pool, 200).await?;
-    let tpl = MemoryTemplate {
-        active: "memory",
-        sessions: sessions.into_iter().map(Into::into).collect(),
-    };
-    Ok(Html(tpl.render()?))
-}
-
-#[derive(Debug, Deserialize)]
-struct MemoryClearForm {
-    conversation_key: String,
-}
-
-async fn admin_memory_clear(
-    State(state): State<AppState>,
-    Form(form): Form<MemoryClearForm>,
-) -> AppResult<Redirect> {
-    let key = form.conversation_key.trim();
-    if !key.is_empty() {
-        let _ = db::delete_session(&state.pool, key).await?;
-    }
-    Ok(Redirect::to("/admin/memory"))
-}
-
-async fn admin_context_get(State(state): State<AppState>) -> AppResult<Html<String>> {
-    let context_dir = state.config.data_dir.join("context");
-    let context_dir = tokio::fs::canonicalize(&context_dir)
-        .await
-        .unwrap_or(context_dir);
-
-    let files = list_context_files(&context_dir).await?;
-    let tpl = ContextTemplate {
-        active: "context",
-        files,
-    };
-    Ok(Html(tpl.render()?))
-}
-
-#[derive(Debug, Deserialize)]
-struct ContextEditQuery {
-    path: Option<String>,
-}
-
-async fn admin_context_edit_get(
-    State(state): State<AppState>,
-    Query(q): Query<ContextEditQuery>,
-) -> AppResult<Html<String>> {
-    let path = q.path.unwrap_or_else(|| "INDEX.md".to_string());
-    let path = path.trim().to_string();
-    if path.is_empty() {
-        return Ok(Html(
-            ContextEditTemplate {
-                active: "context",
-                path: "INDEX.md".to_string(),
-                content: String::new(),
-                bytes: "0".to_string(),
-            }
-            .render()?,
-        ));
-    }
-
-    let context_dir = state.config.data_dir.join("context");
-    let context_dir = tokio::fs::canonicalize(&context_dir)
-        .await
-        .unwrap_or(context_dir);
-    let rel = sanitize_rel_path(&path)?;
-    let full = resolve_under_root_no_symlinks(&context_dir, &rel).await?;
-
-    let content = match tokio::fs::read_to_string(&full).await {
-        Ok(v) => v,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(err) => return Err(anyhow::Error::new(err).context("read context file").into()),
-    };
-
-    let bytes = content.as_bytes().len().to_string();
-    let tpl = ContextEditTemplate {
-        active: "context",
-        path,
-        content,
-        bytes,
-    };
-    Ok(Html(tpl.render()?))
-}
-
-#[derive(Debug, Deserialize)]
-struct ContextEditForm {
-    path: String,
-    content: String,
-}
-
-async fn admin_context_edit_post(
-    State(state): State<AppState>,
-    Form(form): Form<ContextEditForm>,
-) -> AppResult<Redirect> {
-    const MAX_CHARS: usize = 300_000;
-
-    let path = form.path.trim().to_string();
-    if path.is_empty() {
-        return Ok(Redirect::to("/admin/context"));
-    }
-
-    let context_dir = state.config.data_dir.join("context");
-    let context_dir = tokio::fs::canonicalize(&context_dir)
-        .await
-        .unwrap_or(context_dir);
-    let rel = sanitize_rel_path(&path)?;
-    let full = resolve_under_root_no_symlinks(&context_dir, &rel).await?;
-
-    if let Some(parent) = full.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .context("create context file parent dir")?;
-    }
-
-    let content = clamp_chars(form.content, MAX_CHARS);
-    tokio::fs::write(&full, content.as_bytes())
-        .await
-        .context("write context file")?;
-
-    Ok(Redirect::to(&format!(
-        "/admin/context/edit?path={}",
-        urlencoding::encode(&path)
-    )))
-}
-
-async fn admin_context_view_get(
-    State(state): State<AppState>,
-    Query(q): Query<ContextEditQuery>,
-) -> AppResult<Html<String>> {
-    let path = q.path.unwrap_or_else(|| "INDEX.md".to_string());
-    let path = path.trim().to_string();
-    if path.is_empty() {
-        return Ok(Html(
-            crate::templates::ContextViewTemplate {
-                active: "context",
-                path: "INDEX.md".to_string(),
-                rendered_html: String::new(),
-                bytes: "0".to_string(),
-            }
-            .render()?,
-        ));
-    }
-
-    let context_dir = state.config.data_dir.join("context");
-    let context_dir = tokio::fs::canonicalize(&context_dir)
-        .await
-        .unwrap_or(context_dir);
-    let rel = sanitize_rel_path(&path)?;
-    let full = resolve_under_root_no_symlinks(&context_dir, &rel).await?;
-
-    let content = match tokio::fs::read_to_string(&full).await {
-        Ok(v) => v,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(err) => return Err(anyhow::Error::new(err).context("read context file").into()),
-    };
-
-    let bytes = content.as_bytes().len().to_string();
-
-    // Detect if this is a markdown file
-    let is_markdown = path.ends_with(".md") || path.ends_with(".markdown");
-
-    let rendered_html = if is_markdown {
-        // Render markdown to HTML
-        let parser = pulldown_cmark::Parser::new(&content);
-        let mut html_output = String::new();
-        pulldown_cmark::html::push_html(&mut html_output, parser);
-        html_output
-    } else {
-        // Detect language for display
-        let lang = if path.ends_with(".py") {
-            "python"
-        } else if path.ends_with(".rs") {
-            "rust"
-        } else if path.ends_with(".toml") {
-            "toml"
-        } else if path.ends_with(".yaml") || path.ends_with(".yml") {
-            "yaml"
-        } else if path.ends_with(".json") {
-            "json"
-        } else if path.ends_with(".sh") || path.ends_with(".bash") {
-            "bash"
-        } else if path.ends_with(".sql") {
-            "sql"
-        } else if path.ends_with(".html") || path.ends_with(".htm") {
-            "html"
-        } else if path.ends_with(".css") {
-            "css"
-        } else if path.ends_with(".js") || path.ends_with(".ts") {
-            "javascript"
-        } else if path.contains("Dockerfile") {
-            "dockerfile"
-        } else if path.contains("Makefile") || path.ends_with(".mk") {
-            "makefile"
-        } else {
-            "text"
-        };
-        // Escape HTML entities and wrap in <pre><code>
-        let escaped = content
-            .replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;");
-        format!(
-            "<pre class=\"code-view\"><code data-lang=\"{}\">{}</code></pre>",
-            lang, escaped
-        )
-    };
-
-    let tpl = crate::templates::ContextViewTemplate {
-        active: "context",
-        path,
-        rendered_html,
-        bytes,
-    };
-    Ok(Html(tpl.render()?))
-}
-
-async fn admin_task_cancel(
-    State(state): State<AppState>,
-    Path(id): Path<i64>,
-) -> AppResult<Redirect> {
-    let _ = db::cancel_task(&state.pool, id).await?;
-    Ok(Redirect::to("/admin/tasks"))
-}
-
-async fn admin_tasks_redirect() -> AppResult<Redirect> {
-    Ok(Redirect::to("/admin/tasks"))
-}
-
-async fn admin_task_retry(
-    State(state): State<AppState>,
-    Path(id): Path<i64>,
-) -> AppResult<Redirect> {
-    let _ = db::retry_task(&state.pool, id).await?;
-    Ok(Redirect::to("/admin/tasks"))
-}
-
-async fn admin_diagnostics_get(State(_state): State<AppState>) -> AppResult<Html<String>> {
-    let tpl = DiagnosticsTemplate {
-        active: "diagnostics",
-        codex_result: None,
-        codex_error: None,
-    };
-    Ok(Html(tpl.render()?))
-}
-
-async fn admin_diagnostics_codex_post(State(state): State<AppState>) -> AppResult<Html<String>> {
-    let res = run_codex_self_test(&state).await;
-    let (codex_result, codex_error) = match res {
-        Ok(v) => (Some(v), None),
-        Err(err) => (None, Some(format!("{err:#}"))),
-    };
-    let tpl = DiagnosticsTemplate {
-        active: "diagnostics",
-        codex_result,
-        codex_error,
-    };
-    Ok(Html(tpl.render()?))
-}
-
-async fn run_codex_self_test(state: &AppState) -> anyhow::Result<String> {
-    let mut settings = db::get_settings(&state.pool).await?;
-    // Keep diagnostics safe even if the instance is configured for full permissions.
-    settings.permissions_mode = PermissionsMode::Read;
-    settings.allow_context_writes = false;
-    settings.allow_cron = false;
-    settings.allow_slack_mcp = false;
-    settings.allow_web_mcp = false;
-
-    let openai_api_key = crate::secrets::load_openai_api_key_opt(state).await?;
-    if openai_api_key.is_none() {
-        let codex_home = state.config.effective_codex_home();
-        let auth_summary = crate::codex_login::read_auth_summary(&codex_home).await?;
-        if !auth_summary.file_present {
-            anyhow::bail!(
-                "OpenAI auth not configured. Set OPENAI_API_KEY (env), store it in /admin/settings, or log in via /admin/auth."
-            );
-        }
-    }
-
-    let cwd = state.config.data_dir.join("context");
-    let cwd = tokio::fs::canonicalize(&cwd).await.unwrap_or(cwd);
-
-    let mut codex = crate::codex::CodexManager::new(state.config.clone());
-    codex
-        .ensure_started(
-            openai_api_key.as_deref(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            false,
-            false,
-            None,
-        )
-        .await?;
-
-    let thread_id = codex.resume_or_start_thread(None, &settings, &cwd).await?;
-    let now = chrono::Utc::now().timestamp();
-    let task = crate::models::Task {
-        id: 0,
-        status: "diagnostic".to_string(),
-        provider: "admin".to_string(),
-        is_proactive: false,
-        workspace_id: "admin".to_string(),
-        channel_id: "admin".to_string(),
-        thread_ts: "".to_string(),
-        conversation_key: "admin:admin:main".to_string(),
-        event_ts: format!("{now}"),
-        requested_by_user_id: "admin".to_string(),
-        prompt_text: "diagnostic".to_string(),
-        files_json: String::new(),
-        result_text: None,
-        error_text: None,
-        created_at: now,
-        started_at: Some(now),
-        finished_at: None,
-    };
-
-    let input_text = r#"Diagnostics: return ONLY a single JSON object that matches the schema.
-
-Set:
-- should_reply: true
-- reply: "ok"
-- updated_memory_summary: ""
-- context_writes: []
-- upload_files: []
-- cron_jobs: []
-- guardrail_rules: []
-
-Do not call tools."#;
-
-    let schema = crate::worker::agent_output_schema();
-    let result = codex
-        .run_turn(
-            state, &task, &thread_id, &settings, &cwd, input_text, schema, None,
-        )
-        .await
-        .map(|o| o.agent_message_text);
-
-    codex.stop().await;
-    result
-}
-
-fn task_trace_url(state: &AppState, task_id: i64) -> String {
-    let suffix = format!("/admin/tasks/{task_id}");
-    match state.config.base_url.as_deref() {
-        Some(base) if !base.trim().is_empty() => {
-            format!(
-                "{}/{}",
-                base.trim_end_matches('/'),
-                suffix.trim_start_matches('/')
-            )
-        }
-        _ => suffix,
-    }
-}
-
-fn task_link_message(task_id: i64, task_url: &str) -> String {
-    format!(
-        "Task queued: {task_id}. Track progress here: {task_url}.\n\n(If this is your first time, use your /admin password to open this link.)"
-    )
-}
-
-async fn admin_cron_get(State(state): State<AppState>) -> AppResult<Html<String>> {
-    let settings = db::get_settings(&state.pool).await?;
-    let jobs = db::list_cron_jobs(&state.pool, 100).await?;
-    let tpl = CronTemplate {
-        active: "cron",
-        cron_enabled: settings.allow_cron,
-        workspace_id: settings.workspace_id.unwrap_or_default(),
-        jobs: jobs.into_iter().map(Into::into).collect(),
-    };
-    Ok(Html(tpl.render()?))
-}
-
-#[derive(Debug, Deserialize)]
-struct CronAddForm {
-    name: String,
-    channel_id: String,
-    thread_ts: Option<String>,
-    prompt_text: String,
-
-    mode: Option<String>, // agent | message
-
-    schedule_kind: String, // every | cron | at
-    every_seconds: Option<i64>,
-    cron_expr: Option<String>,
-    at_ts: Option<i64>,
-
-    enabled: Option<String>,
-}
-
-async fn admin_cron_add(
-    State(state): State<AppState>,
-    Form(form): Form<CronAddForm>,
-) -> AppResult<Redirect> {
-    let settings = db::get_settings(&state.pool).await?;
-    let Some(workspace_id) = settings
-        .workspace_id
-        .as_deref()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-    else {
-        return Err(anyhow::anyhow!(
-            "workspace_id is not set yet. Mention Grail once in Slack so it can pin the workspace id."
-        )
-        .into());
-    };
-
-    let now = chrono::Utc::now().timestamp();
-    let mut job = crate::models::CronJob {
-        id: random_id("cron"),
-        name: form.name.trim().to_string(),
-        enabled: form.enabled.is_some(),
-        mode: form
-            .mode
-            .unwrap_or_else(|| "agent".to_string())
-            .trim()
-            .to_string(),
-        schedule_kind: form.schedule_kind.trim().to_string(),
-        every_seconds: form.every_seconds,
-        cron_expr: form
-            .cron_expr
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty()),
-        at_ts: form.at_ts,
-        workspace_id,
-        channel_id: form.channel_id.trim().to_string(),
-        thread_ts: form.thread_ts.unwrap_or_default().trim().to_string(), // empty = post in channel (no thread)
-        prompt_text: clamp_chars(form.prompt_text.trim().to_string(), 8_000),
-        next_run_at: None,
-        last_run_at: None,
-        last_status: None,
-        last_error: None,
-        created_at: now,
-        updated_at: now,
-    };
-
-    // Basic validation + compute initial next_run_at.
-    if job.name.is_empty() {
-        return Err(anyhow::anyhow!("name is required").into());
-    }
-    if job.channel_id.is_empty() {
-        return Err(anyhow::anyhow!("channel_id is required").into());
-    }
-    if job.prompt_text.trim().is_empty() {
-        return Err(anyhow::anyhow!("prompt_text is required").into());
-    }
-
-    job.next_run_at = match job.schedule_kind.as_str() {
-        "every" => {
-            let s = job.every_seconds.context("every_seconds is required")?;
-            if s < 1 {
-                return Err(anyhow::anyhow!("every_seconds must be >= 1").into());
-            }
-            Some(now + s)
-        }
-        "cron" => {
-            let expr = job.cron_expr.as_deref().context("cron_expr is required")?;
-            let normalized = crate::cron_expr::normalize_cron_expr(expr)?;
-            // Store normalized so execution is predictable.
-            job.cron_expr = Some(normalized.clone());
-            let schedule = cron::Schedule::from_str(&normalized).context("parse cron expr")?;
-            let next = schedule
-                .upcoming(chrono::Utc)
-                .next()
-                .context("cron had no upcoming times")?;
-            Some(next.timestamp())
-        }
-        "at" => {
-            let at = job.at_ts.context("at_ts is required")?;
-            if at <= now {
-                return Err(anyhow::anyhow!("at_ts must be in the future (unix seconds)").into());
-            }
-            Some(at)
-        }
-        other => {
-            return Err(anyhow::anyhow!("unknown schedule_kind: {other}").into());
-        }
-    };
-
-    db::insert_cron_job(&state.pool, &job).await?;
-    Ok(Redirect::to("/admin/cron"))
-}
-
-async fn admin_cron_delete(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> AppResult<Redirect> {
-    let _ = db::delete_cron_job(&state.pool, &id).await?;
-    Ok(Redirect::to("/admin/cron"))
-}
-
-async fn admin_cron_enable(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> AppResult<Redirect> {
-    let _ = db::set_cron_job_enabled(&state.pool, &id, true).await?;
-    Ok(Redirect::to("/admin/cron"))
-}
-
-async fn admin_cron_disable(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> AppResult<Redirect> {
-    let _ = db::set_cron_job_enabled(&state.pool, &id, false).await?;
-    Ok(Redirect::to("/admin/cron"))
-}
-
-async fn admin_guardrails_get(State(state): State<AppState>) -> AppResult<Html<String>> {
-    let rules = db::list_guardrail_rules(&state.pool, None, 500).await?;
-    let tpl = GuardrailsTemplate {
-        active: "guardrails",
-        rules: rules.into_iter().map(Into::into).collect(),
-    };
-    Ok(Html(tpl.render()?))
-}
-
-#[derive(Debug, Deserialize)]
-struct GuardrailAddForm {
-    name: String,
-    kind: String,
-    action: String,
-    pattern_kind: String,
-    pattern: String,
-    priority: i64,
-    enabled: Option<String>,
-}
-
-async fn admin_guardrails_add(
-    State(state): State<AppState>,
-    Form(form): Form<GuardrailAddForm>,
-) -> AppResult<Redirect> {
-    let now = chrono::Utc::now().timestamp();
-    let rule = crate::models::GuardrailRule {
-        id: random_id("gr"),
-        name: clamp_chars(form.name.trim().to_string(), 120),
-        kind: form.kind.trim().to_string(),
-        pattern_kind: form.pattern_kind.trim().to_string(),
-        pattern: clamp_chars(form.pattern.trim().to_string(), 2_000),
-        action: form.action.trim().to_string(),
-        priority: form.priority.clamp(-10_000, 10_000),
-        enabled: form.enabled.is_some(),
-        created_at: now,
-        updated_at: now,
-    };
-    crate::guardrails::validate_rule(&rule)?;
-    db::insert_guardrail_rule(&state.pool, &rule).await?;
-    Ok(Redirect::to("/admin/guardrails"))
-}
-
-async fn admin_guardrails_delete(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> AppResult<Redirect> {
-    let _ = db::delete_guardrail_rule(&state.pool, &id).await?;
-    Ok(Redirect::to("/admin/guardrails"))
-}
-
-async fn admin_guardrails_enable(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> AppResult<Redirect> {
-    let _ = db::set_guardrail_rule_enabled(&state.pool, &id, true).await?;
-    Ok(Redirect::to("/admin/guardrails"))
-}
-
-async fn admin_guardrails_disable(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> AppResult<Redirect> {
-    let _ = db::set_guardrail_rule_enabled(&state.pool, &id, false).await?;
-    Ok(Redirect::to("/admin/guardrails"))
-}
-
-async fn admin_approvals_get(State(state): State<AppState>) -> AppResult<Html<String>> {
-    let approvals = db::list_recent_approvals(&state.pool, 100).await?;
-    let tpl = ApprovalsTemplate {
-        active: "approvals",
-        approvals: approvals.into_iter().map(Into::into).collect(),
-    };
-    Ok(Html(tpl.render()?))
-}
-
-async fn admin_approval_approve(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> AppResult<Redirect> {
-    let _ = crate::approvals::handle_approval_command(&state, "approve", &id).await?;
-    Ok(Redirect::to("/admin/approvals"))
-}
-
-async fn admin_approval_always(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> AppResult<Redirect> {
-    let _ = crate::approvals::handle_approval_command(&state, "always", &id).await?;
-    Ok(Redirect::to("/admin/approvals"))
-}
-
-async fn admin_approval_deny(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> AppResult<Redirect> {
-    let _ = crate::approvals::handle_approval_command(&state, "deny", &id).await?;
-    Ok(Redirect::to("/admin/approvals"))
-}
-
-async fn admin_auth_get(State(state): State<AppState>) -> AppResult<Html<String>> {
-    let codex_home = state.config.effective_codex_home();
-    let auth_summary = crate::codex_login::read_auth_summary(&codex_home).await?;
-    let latest = db::get_latest_codex_device_login(&state.pool).await?;
-    let device_login = latest.map(|l| DeviceLoginRow {
-        status: l.status,
-        verification_url: l.verification_url,
-        user_code: l.user_code,
-        error_text: l.error_text.unwrap_or_default(),
-        created_at: format!("{}", l.created_at),
-    });
-
-    let github_latest = db::get_latest_github_device_login(&state.pool).await?;
-    let github_device_login = github_latest.map(|l| DeviceLoginRow {
-        status: l.status,
-        verification_url: l.verification_url,
-        user_code: l.user_code,
-        error_text: l.error_text.unwrap_or_default(),
-        created_at: format!("{}", l.created_at),
-    });
-    let github_client_id_set = std::env::var("GITHUB_CLIENT_ID")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .is_some();
-
-    let tpl = AuthTemplate {
-        active: "auth",
-        openai_api_key_set: openai_api_key_configured(&state).await?,
-        codex_auth_file_set: auth_summary.file_present,
-        codex_auth_mode: auth_summary.auth_mode,
-        device_login,
-        github_client_id_set,
-        github_token_set: github_token_configured(&state).await.unwrap_or(false),
-        github_device_login,
-    };
-    Ok(Html(tpl.render()?))
-}
-
-async fn admin_auth_device_start(State(state): State<AppState>) -> AppResult<Redirect> {
-    // Cancel any pending login first.
-    let _ = db::cancel_pending_codex_device_logins(&state.pool).await;
-
-    let issuer = std::env::var("CODEX_ISSUER")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| crate::codex_login::DEFAULT_ISSUER.to_string());
-    let client_id = std::env::var("CODEX_CLIENT_ID")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| crate::codex_login::DEFAULT_CLIENT_ID.to_string());
-
-    let http = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .context("build reqwest client")?;
-
-    let dc = crate::codex_login::request_device_code(&http, &issuer, &client_id).await?;
-    let id = random_id("codex_device_login");
-
-    let login = crate::models::CodexDeviceLogin {
-        id: id.clone(),
-        status: "pending".to_string(),
-        verification_url: dc.verification_url.clone(),
-        user_code: dc.user_code.clone(),
-        device_auth_id: dc.device_auth_id.clone(),
-        interval_sec: dc.interval_sec as i64,
-        error_text: None,
-        created_at: chrono::Utc::now().timestamp(),
-        completed_at: None,
-    };
-    db::insert_codex_device_login(&state.pool, &login).await?;
-
-    let pool = state.pool.clone();
-    let codex_home = state.config.effective_codex_home();
-    tokio::spawn(async move {
-        if let Err(err) = run_device_login_flow(
-            pool,
-            id,
-            codex_home,
-            issuer,
-            client_id,
-            dc.device_auth_id,
-            dc.user_code,
-            dc.interval_sec,
-        )
-        .await
-        {
-            warn!(error = %err, "device login flow failed");
-        }
-    });
-
-    Ok(Redirect::to("/admin/auth"))
-}
-
-async fn admin_auth_device_cancel(State(state): State<AppState>) -> AppResult<Redirect> {
-    let _ = db::cancel_pending_codex_device_logins(&state.pool).await?;
-    Ok(Redirect::to("/admin/auth"))
-}
-
-async fn admin_auth_logout(State(state): State<AppState>) -> AppResult<Redirect> {
-    let codex_home = state.config.effective_codex_home();
-    let _ = crate::codex_login::delete_auth_json(&codex_home).await?;
-    let _ = db::cancel_pending_codex_device_logins(&state.pool).await?;
-    Ok(Redirect::to("/admin/auth"))
-}
-
-async fn admin_auth_github_device_start(State(state): State<AppState>) -> AppResult<Redirect> {
-    // Cancel any pending login first.
-    let _ = db::cancel_pending_github_device_logins(&state.pool).await;
-
-    let client_id = std::env::var("GITHUB_CLIENT_ID")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .context("GITHUB_CLIENT_ID is not configured")?;
-
-    let scope = std::env::var("GITHUB_OAUTH_SCOPE")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "repo".to_string());
-
-    let http = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .context("build reqwest client")?;
-
-    let dc = crate::github_login::request_device_code(
-        &http,
-        crate::github_login::DEFAULT_GITHUB_BASE,
-        &client_id,
-        &scope,
-    )
-    .await?;
-
-    let verification_url = dc
-        .verification_url_complete
-        .clone()
-        .unwrap_or_else(|| dc.verification_url.clone());
-
-    let id = random_id("github_device_login");
-    let login = crate::models::GithubDeviceLogin {
-        id: id.clone(),
-        status: "pending".to_string(),
-        verification_url,
-        user_code: dc.user_code.clone(),
-        device_code: dc.device_code.clone(),
-        interval_sec: dc.interval_sec as i64,
-        error_text: None,
-        created_at: chrono::Utc::now().timestamp(),
-        completed_at: None,
-    };
-    db::insert_github_device_login(&state.pool, &login).await?;
-
-    let pool = state.pool.clone();
-    let data_dir = state.config.data_dir.clone();
-    let crypto = state.crypto.clone();
-    let base = crate::github_login::DEFAULT_GITHUB_BASE.to_string();
-    tokio::spawn(async move {
-        if let Err(err) = run_github_device_login_flow(
-            pool,
-            id,
-            crypto,
-            data_dir,
-            base,
-            client_id,
-            dc.device_code,
-            dc.interval_sec,
-            dc.expires_in_sec,
-        )
-        .await
-        {
-            warn!(error = %err, "github device login flow failed");
-        }
-    });
-
-    Ok(Redirect::to("/admin/auth"))
-}
-
-async fn admin_auth_github_device_cancel(State(state): State<AppState>) -> AppResult<Redirect> {
-    let _ = db::cancel_pending_github_device_logins(&state.pool).await?;
-    Ok(Redirect::to("/admin/auth"))
-}
-
-async fn admin_auth_github_logout(State(state): State<AppState>) -> AppResult<Redirect> {
-    let _ = db::delete_secret(&state.pool, "github_token").await?;
-    let token_path = state.config.data_dir.join("github").join("token.txt");
-    let _ = tokio::fs::remove_file(&token_path).await;
-    let _ = db::cancel_pending_github_device_logins(&state.pool).await?;
-    Ok(Redirect::to("/admin/auth"))
-}
-
 async fn slack_events(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1876,10 +594,39 @@ async fn slack_events(
                 _ => return (StatusCode::OK, "").into_response(),
             };
 
+            let processed =
+                match db::try_mark_event_processed(&state.pool, &team_id, &event_id).await {
+                    Ok(v) => v,
+                    Err(err) => {
+                        error!(error = %err, "failed to dedupe event");
+                        return (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response();
+                    }
+                };
+
+            if !processed {
+                return (StatusCode::OK, "").into_response();
+            }
+
             // Enforce single-workspace per deployment.
             match db::get_settings(&state.pool).await {
                 Ok(settings) => {
                     if is_proactive && !settings.slack_proactive_enabled {
+                        if let Err(err) = db::enqueue_ignored_task(
+                            &state.pool,
+                            "slack",
+                            &team_id,
+                            &channel,
+                            &thread_ts,
+                            &ts,
+                            &user,
+                            &text,
+                            "proactive mode is disabled",
+                            true,
+                        )
+                        .await
+                        {
+                            warn!(error = %err, "failed to log ignored proactive task");
+                        }
                         return (StatusCode::OK, "").into_response();
                     }
 
@@ -1891,6 +638,24 @@ async fn slack_events(
                     {
                         if want != team_id {
                             warn!(want, got = %team_id, "ignoring slack event from unexpected workspace");
+                            if is_proactive {
+                                if let Err(err) = db::enqueue_ignored_task(
+                                    &state.pool,
+                                    "slack",
+                                    &team_id,
+                                    &channel,
+                                    &thread_ts,
+                                    &ts,
+                                    &user,
+                                    &text,
+                                    "workspace id mismatch",
+                                    true,
+                                )
+                                .await
+                                {
+                                    warn!(error = %err, "failed to log ignored proactive task");
+                                }
+                            }
                             return (StatusCode::OK, "").into_response();
                         }
                     } else {
@@ -1902,6 +667,24 @@ async fn slack_events(
                     let allowed = parse_allow_from(&settings.slack_allow_from);
                     if !allowed.is_empty() && !allowed.contains(user.as_str()) {
                         warn!(user = %user, "slack user not in allow list; ignoring");
+                        if is_proactive {
+                            if let Err(err) = db::enqueue_ignored_task(
+                                &state.pool,
+                                "slack",
+                                &team_id,
+                                &channel,
+                                &thread_ts,
+                                &ts,
+                                &user,
+                                &text,
+                                "user not in allow list",
+                                true,
+                            )
+                            .await
+                            {
+                                warn!(error = %err, "failed to log ignored proactive task");
+                            }
+                        }
                         if !is_proactive {
                             if let Ok(Some(token)) =
                                 crate::secrets::load_slack_bot_token_opt(&state).await
@@ -1922,6 +705,24 @@ async fn slack_events(
                         let channels = parse_allow_from(&settings.slack_allow_channels);
                         if !channels.is_empty() && !channels.contains(channel.as_str()) {
                             warn!(channel = %channel, "slack channel not in allow list; ignoring");
+                            if is_proactive {
+                                if let Err(err) = db::enqueue_ignored_task(
+                                    &state.pool,
+                                    "slack",
+                                    &team_id,
+                                    &channel,
+                                    &thread_ts,
+                                    &ts,
+                                    &user,
+                                    &text,
+                                    "channel not in allow list",
+                                    true,
+                                )
+                                .await
+                                {
+                                    warn!(error = %err, "failed to log ignored proactive task");
+                                }
+                            }
                             if !is_proactive {
                                 if let Ok(Some(token)) =
                                     crate::secrets::load_slack_bot_token_opt(&state).await
@@ -1941,6 +742,22 @@ async fn slack_events(
                 Err(err) => {
                     warn!(error = %err, "failed to load settings for slack authz");
                     if is_proactive {
+                        if let Err(err) = db::enqueue_ignored_task(
+                            &state.pool,
+                            "slack",
+                            &team_id,
+                            &channel,
+                            &thread_ts,
+                            &ts,
+                            &user,
+                            &text,
+                            "settings load failed",
+                            true,
+                        )
+                        .await
+                        {
+                            warn!(error = %err, "failed to log ignored proactive task");
+                        }
                         return (StatusCode::OK, "").into_response();
                     }
                 }
@@ -1954,6 +771,22 @@ async fn slack_events(
                         Ok(Some(bot_user_id)) => {
                             let needle = format!("<@{}", bot_user_id);
                             if text.contains(&needle) {
+                                if let Err(err) = db::enqueue_ignored_task(
+                                    &state.pool,
+                                    "slack",
+                                    &team_id,
+                                    &channel,
+                                    &thread_ts,
+                                    &ts,
+                                    &user,
+                                    &text,
+                                    "message directly mentioned the bot",
+                                    true,
+                                )
+                                .await
+                                {
+                                    warn!(error = %err, "failed to log ignored proactive task");
+                                }
                                 return (StatusCode::OK, "").into_response();
                             }
                         }
@@ -1963,19 +796,6 @@ async fn slack_events(
                         }
                     }
                 }
-            }
-
-            let processed =
-                match db::try_mark_event_processed(&state.pool, &team_id, &event_id).await {
-                    Ok(v) => v,
-                    Err(err) => {
-                        error!(error = %err, "failed to dedupe event");
-                        return (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response();
-                    }
-                };
-
-            if !processed {
-                return (StatusCode::OK, "").into_response();
             }
 
             let mut prompt = clamp_chars(
@@ -2876,8 +1696,8 @@ fn clamp_chars(s: String, max: usize) -> String {
 
 pub async fn list_context_files(
     root: &std::path::Path,
-) -> anyhow::Result<Vec<crate::templates::ContextFileRow>> {
-    let mut out: Vec<crate::templates::ContextFileRow> = Vec::new();
+) -> anyhow::Result<Vec<ContextFileRow>> {
+    let mut out: Vec<ContextFileRow> = Vec::new();
 
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -2906,19 +1726,21 @@ pub async fn list_context_files(
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .to_string();
-            let edit_url = format!("/admin/context/edit?path={}", urlencoding::encode(&rel));
-            let view_url = format!("/admin/context/view?path={}", urlencoding::encode(&rel));
-            out.push(crate::templates::ContextFileRow {
+            out.push(ContextFileRow {
                 path: rel,
                 bytes: format!("{}", meta.len()),
-                edit_url,
-                view_url,
             });
         }
     }
 
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
+}
+
+#[derive(Debug)]
+struct ContextFileRow {
+    path: String,
+    bytes: String,
 }
 
 pub fn sanitize_rel_path(path: &str) -> anyhow::Result<std::path::PathBuf> {

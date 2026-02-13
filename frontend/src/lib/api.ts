@@ -75,9 +75,15 @@ export const api = {
   startDeviceLogin: () => request<{ ok: boolean }>('/auth/device/start', { method: 'POST' }),
   cancelDeviceLogin: () => request<{ ok: boolean }>('/auth/device/cancel', { method: 'POST' }),
   authLogout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
-  startGithubDeviceLogin: () => request<{ ok: boolean }>('/auth/github/device/start', { method: 'POST' }),
+  startGithubDeviceLogin: () =>
+    request<{ ok: boolean; verification_url?: string; user_code?: string }>(
+      '/auth/github/device/start',
+      { method: 'POST' },
+    ),
   cancelGithubDeviceLogin: () => request<{ ok: boolean }>('/auth/github/device/cancel', { method: 'POST' }),
   githubLogout: () => request<{ ok: boolean }>('/auth/github/logout', { method: 'POST' }),
+  setGithubClientId: (value: string) =>
+    request<{ ok: boolean }>('/settings', { method: 'POST', body: JSON.stringify({ github_client_id: value }) }),
 
   // Diagnostics
   getDiagnostics: () => request<DiagnosticsData>('/diagnostics'),
@@ -103,6 +109,11 @@ export interface StatusData {
   active_task_started_at: string;
   pending_approvals: number;
   guardrails_enabled: number;
+  browser_enabled: boolean;
+  browser_novnc_enabled: boolean;
+  browser_novnc_url: string;
+  browser_profile_name: string;
+  browser_cdp_port: string;
 }
 
 export interface SettingsData {
@@ -130,6 +141,7 @@ export interface SettingsData {
   auto_apply_guardrail_tighten: boolean;
   web_allow_domains: string;
   web_deny_domains: string;
+  github_client_id: string;
   // Secret status flags
   master_key_set: boolean;
   openai_api_key_set: boolean;
@@ -258,6 +270,8 @@ export interface AuthData {
     created_at: string;
   };
   github_client_id_set: boolean;
+  github_client_id_source: string;
+  github_client_id_value: string;
   github_token_set: boolean;
   github_device_login?: {
     status: string;

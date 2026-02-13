@@ -18,6 +18,13 @@ export function StatusPage() {
     </span>
   );
 
+  const statusPill = (value: boolean, enabledLabel = 'Enabled', disabledLabel = 'Disabled') => (
+    <span className={`pill ${value ? 'pill-ok' : 'pill-bad'}`}>
+      <span className="pill-dot" />
+      {value ? enabledLabel : disabledLabel}
+    </span>
+  );
+
   return (
     <>
       <h2>Status</h2>
@@ -79,6 +86,36 @@ export function StatusPage() {
           <div className="kv-item">
             <div className="kv-label">Guardrails Enabled</div>
             <div className="kv-value">{data.guardrails_enabled}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">Browser Automation</div>
+        <div className="kv-grid">
+          <div className="kv-item">
+            <div className="kv-label">Browser Service</div>
+            <div className="kv-value">{statusPill(data.browser_enabled)}</div>
+          </div>
+          <div className="kv-item">
+            <div className="kv-label">noVNC Access</div>
+            <div className="kv-value" style={{ wordBreak: 'break-word' }}>
+              {data.browser_novnc_enabled && data.browser_novnc_url ? (
+                <a href={data.browser_novnc_url} target="_blank" rel="noreferrer">
+                  {data.browser_novnc_url}
+                </a>
+              ) : (
+                statusPill(false, 'Enabled', 'Disabled')
+              )}
+            </div>
+          </div>
+          <div className="kv-item">
+            <div className="kv-label">Profile</div>
+            <div className="kv-value">{data.browser_profile_name || 'default'}</div>
+          </div>
+          <div className="kv-item">
+            <div className="kv-label">CDP Port</div>
+            <div className="kv-value">{data.browser_cdp_port}</div>
           </div>
         </div>
       </div>
